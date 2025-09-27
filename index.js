@@ -6,12 +6,7 @@ const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
 const cron = require('node-cron');
 
-// --- Direkt im Code konfigurieren ---
-const SENDGRID_API_KEY = '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';
-const MAIL_FROM = 'tsvdienste@web.de';
-const DATABASE_URL = 'DEINE_POSTGRES_URLpostgresql://postgres:rUNJCeZHEeztvyMnFqXoZEUyeJglmWSM@postgres.railway.internal:5432/railway'; // Trage hier deine DB-URL ein!
-const JWT_SECRET = 'TSVwolfschlungen';
-const PORT = 3000; // oder beliebig
+
 
 sgMail.setApiKey(SENDGRID_API_KEY);
 
