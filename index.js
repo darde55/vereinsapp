@@ -62,6 +62,7 @@ app.post('/api/register', async (req, res) => {
     );
     res.status(201).json({ message: 'User registriert' });
   } catch (err) {
+    console.error('Fehler bei Registrierung:', err);
     if (err.code === '23505') {
       res.status(409).json({ message: 'Username existiert bereits' });
     } else {
@@ -92,6 +93,7 @@ app.post('/api/login', async (req, res) => {
     );
     res.json({ token, username: user.username, role: user.role });
   } catch (err) {
+    console.error('Fehler beim Login:', err);
     res.status(500).json({ message: 'Fehler beim Login', error: err.message });
   }
 });
@@ -107,6 +109,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'User nicht gefunden' });
     res.json(result.rows[0]);
   } catch (err) {
+    console.error('Fehler beim Laden des Profils:', err);
     res.status(500).json({ message: 'Fehler beim Laden des Profils', error: err.message });
   }
 });
@@ -123,22 +126,22 @@ app.get('/api/profile/termine', authenticateToken, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    console.error('Fehler beim Laden deiner Termine:', err);
     res.status(500).json({ message: 'Fehler beim Laden deiner Termine', error: err.message });
   }
 });
 
 // --- Benutzerverwaltung (Admin) ---
-// Alle Benutzer anzeigen
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query('SELECT username, email, role, score FROM users');
     res.json(result.rows);
   } catch (err) {
+    console.error('Fehler beim Laden der Benutzer:', err);
     res.status(500).json({ message: 'Fehler beim Laden der Benutzer', error: err.message });
   }
 });
 
-// Neuen Benutzer anlegen
 app.post('/api/users', authenticateToken, async (req, res) => {
   const { username, email, password, role } = req.body;
   if (!username || !email || !password || !role) {
@@ -152,6 +155,7 @@ app.post('/api/users', authenticateToken, async (req, res) => {
     );
     res.status(201).json({ message: 'User angelegt' });
   } catch (err) {
+    console.error('Fehler beim Anlegen des Benutzers:', err);
     if (err.code === '23505') {
       res.status(409).json({ message: 'Username existiert bereits' });
     } else {
@@ -160,7 +164,6 @@ app.post('/api/users', authenticateToken, async (req, res) => {
   }
 });
 
-// Benutzer bearbeiten
 app.put('/api/users/:username', authenticateToken, async (req, res) => {
   const username = req.params.username;
   const { email, role, score } = req.body;
@@ -171,17 +174,18 @@ app.put('/api/users/:username', authenticateToken, async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
+    console.error('Fehler beim Bearbeiten des Benutzers:', err);
     res.status(500).json({ message: 'Fehler beim Bearbeiten des Benutzers', error: err.message });
   }
 });
 
-// Benutzer löschen
 app.delete('/api/users/:username', authenticateToken, async (req, res) => {
   const username = req.params.username;
   try {
     await pool.query('DELETE FROM users WHERE username = $1', [username]);
     res.json({ message: 'Benutzer gelöscht' });
   } catch (err) {
+    console.error('Fehler beim Löschen des Benutzers:', err);
     res.status(500).json({ message: 'Fehler beim Löschen des Benutzers', error: err.message });
   }
 });
@@ -192,6 +196,7 @@ app.get('/api/termine', async (req, res) => {
     const result = await pool.query('SELECT * FROM termine ORDER BY datum ASC');
     res.json(result.rows);
   } catch (err) {
+    console.error('Fehler beim Laden der Termine:', err);
     res.status(500).json({ message: 'Fehler beim Laden der Termine', error: err.message });
   }
 });
@@ -210,6 +215,7 @@ app.post('/api/termine', authenticateToken, async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
+    console.error('Fehler beim Erstellen des Termins:', err);
     res.status(500).json({ message: 'Fehler beim Erstellen des Termins', error: err.message });
   }
 });
@@ -230,6 +236,7 @@ app.put('/api/termine/:id', authenticateToken, async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
+    console.error('Fehler beim Bearbeiten des Termins:', err);
     res.status(500).json({ message: 'Fehler beim Bearbeiten des Termins', error: err.message });
   }
 });
@@ -240,11 +247,13 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
     await pool.query('DELETE FROM termine WHERE id = $1', [id]);
     res.json({ message: 'Termin gelöscht' });
   } catch (err) {
+    console.error('Fehler beim Löschen des Termins:', err);
     res.status(500).json({ message: 'Fehler beim Löschen des Termins', error: err.message });
   }
 });
 
 // --- Teilnahme an/abmelden (mit Bestätigungsmail) ---
+// WICHTIG: Fehler ausführlich loggen!
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
   const username = req.body.username || req.user.username;
@@ -272,6 +281,9 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Teilnahme gespeichert und Bestätigungsmail versendet' });
   } catch (err) {
+    // Fehler ausführlich loggen!
+    console.error('Fehler bei Teilnahme:', err);
+    if (err.stack) console.error(err.stack);
     res.status(500).json({ message: 'Fehler bei Teilnahme', error: err.message });
   }
 });
@@ -286,6 +298,7 @@ app.delete('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) =>
     );
     res.json({ message: 'Teilnahme entfernt' });
   } catch (err) {
+    console.error('Fehler beim Entfernen der Teilnahme:', err);
     res.status(500).json({ message: 'Fehler beim Entfernen der Teilnahme', error: err.message });
   }
 });
@@ -303,6 +316,7 @@ app.get('/api/termine/:id/teilnehmer', authenticateToken, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    console.error('Fehler beim Laden der Teilnehmer:', err);
     res.status(500).json({ message: 'Fehler beim Laden der Teilnehmer', error: err.message });
   }
 });
@@ -395,7 +409,8 @@ cron.schedule('0 7 * * *', async () => {
       console.log(`Stichtagsmails und automatische Zuweisungen für ${termineRes.rows.length} Termine durchgeführt.`);
     }
   } catch (err) {
-    console.error('Fehler beim Senden der Stichtagsmails/Zuweisungen:', err.message);
+    console.error('Fehler beim Senden der Stichtagsmails/Zuweisungen:', err);
+    if (err.stack) console.error(err.stack);
   }
 });
 
