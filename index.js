@@ -101,6 +101,65 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// --- Benutzerverwaltung (Admin) ---
+// Alle Benutzer anzeigen
+app.get('/api/users', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT username, email, role, score FROM users');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Laden der Benutzer', error: err.message });
+  }
+});
+
+// Neuen Benutzer anlegen
+app.post('/api/users', authenticateToken, async (req, res) => {
+  const { username, email, password, role } = req.body;
+  if (!username || !email || !password || !role) {
+    return res.status(400).json({ message: 'Fehlende Felder!' });
+  }
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query(
+      'INSERT INTO users (username, email, password, role) VALUES ($1, $2, $3, $4)',
+      [username, email, hashedPassword, role]
+    );
+    res.status(201).json({ message: 'User angelegt' });
+  } catch (err) {
+    if (err.code === '23505') {
+      res.status(409).json({ message: 'Username existiert bereits' });
+    } else {
+      res.status(500).json({ message: 'Fehler beim Anlegen', error: err.message });
+    }
+  }
+});
+
+// Benutzer bearbeiten
+app.put('/api/users/:username', authenticateToken, async (req, res) => {
+  const username = req.params.username;
+  const { email, role, score } = req.body;
+  try {
+    const result = await pool.query(
+      'UPDATE users SET email=$1, role=$2, score=$3 WHERE username=$4 RETURNING *',
+      [email, role, score, username]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Bearbeiten des Benutzers', error: err.message });
+  }
+});
+
+// Benutzer löschen
+app.delete('/api/users/:username', authenticateToken, async (req, res) => {
+  const username = req.params.username;
+  try {
+    await pool.query('DELETE FROM users WHERE username = $1', [username]);
+    res.json({ message: 'Benutzer gelöscht' });
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Löschen des Benutzers', error: err.message });
+  }
+});
+
 // --- CRUD Termine ---
 app.get('/api/termine', async (req, res) => {
   try {
@@ -162,7 +221,8 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
 // --- Teilnahme an/abmelden (mit Bestätigungsmail) ---
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
-  const username = req.user.username;
+  // allow admin to specify username in body, otherwise use req.user.username
+  const username = req.body.username || req.user.username;
   try {
     await pool.query(
       'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING',
