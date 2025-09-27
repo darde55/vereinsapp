@@ -1,4 +1,3 @@
-require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -7,15 +6,21 @@ const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
 const cron = require('node-cron');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// --- Direkt im Code konfigurieren ---
+const SENDGRID_API_KEY = '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';
+const MAIL_FROM = 'tsvdienste@web.de';
+const DATABASE_URL = 'DEINE_POSTGRES_URLpostgresql://postgres:rUNJCeZHEeztvyMnFqXoZEUyeJglmWSM@postgres.railway.internal:5432/railway'; // Trage hier deine DB-URL ein!
+const JWT_SECRET = 'TSVwolfschlungen';
+const PORT = 3000; // oder beliebig
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+sgMail.setApiKey(SENDGRID_API_KEY);
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+const app = express();
 
 app.use(cors());
 app.use(express.json());
@@ -32,7 +37,7 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ message: 'Token fehlt' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
       console.log('JWT Verify Error:', err.message);
       return res.status(403).json({ message: 'Token ungültig' });
@@ -88,7 +93,7 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign(
       { username: user.username, role: user.role },
-      process.env.JWT_SECRET,
+      JWT_SECRET,
       { expiresIn: '1d' }
     );
     res.json({ token, username: user.username, role: user.role });
@@ -253,7 +258,6 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
 });
 
 // --- Teilnahme an/abmelden (mit Bestätigungsmail) ---
-// WICHTIG: Fehler ausführlich loggen!
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
   const username = req.body.username || req.user.username;
@@ -273,7 +277,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
 
       await sgMail.send({
         to: userEmail,
-        from: process.env.MAIL_FROM,
+        from: MAIL_FROM,
         subject: `Bestätigung: Teilnahme am Termin "${termin.titel}"`,
         text: `Du bist erfolgreich für den Termin "${termin.titel}" am ${termin.datum} von ${termin.beginn} bis ${termin.ende} angemeldet. Vielen Dank!`
       });
@@ -281,7 +285,6 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Teilnahme gespeichert und Bestätigungsmail versendet' });
   } catch (err) {
-    // Fehler ausführlich loggen!
     console.error('Fehler bei Teilnahme:', err);
     if (err.stack) console.error(err.stack);
     res.status(500).json({ message: 'Fehler bei Teilnahme', error: err.message });
@@ -373,7 +376,7 @@ cron.schedule('0 7 * * *', async () => {
             );
             await sgMail.send({
               to: user.email,
-              from: process.env.MAIL_FROM,
+              from: MAIL_FROM,
               subject: `Automatische Teilnahme am Termin "${termin.titel}"`,
               text: `Du wurdest automatisch für den Termin "${termin.titel}" am ${termin.datum} ausgewählt, weil noch Plätze frei waren.`
             });
@@ -394,7 +397,7 @@ cron.schedule('0 7 * * *', async () => {
       // 5. Mail an Ansprechpartner verschicken
       await sgMail.send({
         to: termin.ansprechpartner_mail,
-        from: process.env.MAIL_FROM,
+        from: MAIL_FROM,
         subject: `Stichtag erreicht: "${termin.titel}"`,
         text: mailText
       });
