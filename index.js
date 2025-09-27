@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -6,16 +7,16 @@ const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
 const cron = require('node-cron');
 
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-
-sgMail.setApiKey(SENDGRID_API_KEY);
+// SendGrid API-Key aus der .env holen
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 const pool = new Pool({
-  connectionString: DATABASE_URL,
+  connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
-
-const app = express();
 
 app.use(cors());
 app.use(express.json());
@@ -32,7 +33,7 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ message: 'Token fehlt' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) {
       console.log('JWT Verify Error:', err.message);
       return res.status(403).json({ message: 'Token ungültig' });
@@ -88,7 +89,7 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign(
       { username: user.username, role: user.role },
-      JWT_SECRET,
+      process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
     res.json({ token, username: user.username, role: user.role });
@@ -114,7 +115,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Eigene Termine (NEU!) ---
+// --- Eigene Termine ---
 app.get('/api/profile/termine', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -272,7 +273,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
 
       await sgMail.send({
         to: userEmail,
-        from: MAIL_FROM,
+        from: process.env.MAIL_FROM,
         subject: `Bestätigung: Teilnahme am Termin "${termin.titel}"`,
         text: `Du bist erfolgreich für den Termin "${termin.titel}" am ${termin.datum} von ${termin.beginn} bis ${termin.ende} angemeldet. Vielen Dank!`
       });
@@ -371,7 +372,7 @@ cron.schedule('0 7 * * *', async () => {
             );
             await sgMail.send({
               to: user.email,
-              from: MAIL_FROM,
+              from: process.env.MAIL_FROM,
               subject: `Automatische Teilnahme am Termin "${termin.titel}"`,
               text: `Du wurdest automatisch für den Termin "${termin.titel}" am ${termin.datum} ausgewählt, weil noch Plätze frei waren.`
             });
@@ -392,7 +393,7 @@ cron.schedule('0 7 * * *', async () => {
       // 5. Mail an Ansprechpartner verschicken
       await sgMail.send({
         to: termin.ansprechpartner_mail,
-        from: MAIL_FROM,
+        from: process.env.MAIL_FROM,
         subject: `Stichtag erreicht: "${termin.titel}"`,
         text: mailText
       });
