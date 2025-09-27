@@ -10,8 +10,13 @@ const cron = require('node-cron');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// SendGrid API-Key aus der .env holen
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// Setze SendGrid API Key
+if (process.env.SENDGRID_API_KEY) {
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+  console.log("SendGrid API Key ist gesetzt.");
+} else {
+  console.error("SendGrid API Key fehlt! Bitte prüfe deine .env Datei.");
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -21,25 +26,19 @@ const pool = new Pool({
 app.use(cors());
 app.use(express.json());
 
-// --- JWT Auth Middleware mit Logging ---
+// --- JWT Auth Middleware ---
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  console.log('--- AUTH LOG ---');
-  console.log('Authorization Header:', authHeader);
-  console.log('Extracted Token:', token);
   if (!token) {
-    console.log('Token fehlt!');
     return res.status(401).json({ message: 'Token fehlt' });
   }
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) {
-      console.log('JWT Verify Error:', err.message);
       return res.status(403).json({ message: 'Token ungültig' });
     }
     req.user = user;
-    console.log('Token gültig für User:', user);
     next();
   });
 }
@@ -253,7 +252,7 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Teilnahme an/abmelden (mit Bestätigungsmail) ---
+// --- Teilnahme an/abmelden (mit Bestätigungsmail & detailliertem Logging) ---
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
   const username = req.body.username || req.user.username;
@@ -271,15 +270,27 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
       const userEmail = userRes.rows[0].email;
       const termin = terminRes.rows[0];
 
-      await sgMail.send({
+      // Sende Bestätigungsmail mit detailliertem Fehler-Log
+      sgMail.send({
         to: userEmail,
         from: process.env.MAIL_FROM,
         subject: `Bestätigung: Teilnahme am Termin "${termin.titel}"`,
         text: `Du bist erfolgreich für den Termin "${termin.titel}" am ${termin.datum} von ${termin.beginn} bis ${termin.ende} angemeldet. Vielen Dank!`
+      }).then(() => {
+        console.log('Bestätigungsmail erfolgreich versendet!');
+      }).catch(error => {
+        console.error('Mailversand fehlgeschlagen!');
+        if (error.response) {
+          console.error('Status:', error.response.statusCode);
+          console.error('Body:', error.response.body);
+        }
+        console.error('Fehlerobjekt:', error);
+        console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
+        console.log('MAIL_FROM:', process.env.MAIL_FROM);
       });
     }
 
-    res.json({ message: 'Teilnahme gespeichert und Bestätigungsmail versendet' });
+    res.json({ message: 'Teilnahme gespeichert und Bestätigungsmail versendet (oder Fehler geloggt)' });
   } catch (err) {
     console.error('Fehler bei Teilnahme:', err);
     if (err.stack) console.error(err.stack);
@@ -370,11 +381,23 @@ cron.schedule('0 7 * * *', async () => {
               'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING',
               [termin.id, user.username]
             );
-            await sgMail.send({
+            // Sende Mail mit Fehler-Log
+            sgMail.send({
               to: user.email,
               from: process.env.MAIL_FROM,
               subject: `Automatische Teilnahme am Termin "${termin.titel}"`,
               text: `Du wurdest automatisch für den Termin "${termin.titel}" am ${termin.datum} ausgewählt, weil noch Plätze frei waren.`
+            }).then(() => {
+              console.log(`Automatische Auswahl-Mail an ${user.username} erfolgreich versendet.`);
+            }).catch(error => {
+              console.error('Mailversand fehlgeschlagen!');
+              if (error.response) {
+                console.error('Status:', error.response.statusCode);
+                console.error('Body:', error.response.body);
+              }
+              console.error('Fehlerobjekt:', error);
+              console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
+              console.log('MAIL_FROM:', process.env.MAIL_FROM);
             });
           }
         }
@@ -390,12 +413,23 @@ cron.schedule('0 7 * * *', async () => {
       const teilnehmerListe = alleTeilnehmer.map(t => `${t.username} (${t.email})`).join('\n') || 'Noch keine Anmeldungen.';
       const mailText = `Der Stichtag für den Termin "${termin.titel}" ist erreicht.\n\nTeilnehmerliste:\n${teilnehmerListe}`;
 
-      // 5. Mail an Ansprechpartner verschicken
-      await sgMail.send({
+      // 5. Mail an Ansprechpartner verschicken mit Fehler-Log
+      sgMail.send({
         to: termin.ansprechpartner_mail,
         from: process.env.MAIL_FROM,
         subject: `Stichtag erreicht: "${termin.titel}"`,
         text: mailText
+      }).then(() => {
+        console.log(`Stichtagsmail an ${termin.ansprechpartner_mail} erfolgreich versendet.`);
+      }).catch(error => {
+        console.error('Stichtagsmail-Versand fehlgeschlagen!');
+        if (error.response) {
+          console.error('Status:', error.response.statusCode);
+          console.error('Body:', error.response.body);
+        }
+        console.error('Fehlerobjekt:', error);
+        console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
+        console.log('MAIL_FROM:', process.env.MAIL_FROM);
       });
 
       // 6. Flag setzen, damit Mail nur 1x verschickt wird
