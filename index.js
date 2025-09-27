@@ -1,4 +1,12 @@
-require('dotenv').config();
+require('dotenv').config(); // Läd die Variablen aus .env
+
+// --- Test-Log für alle relevanten ENV-Variablen ---
+console.log('DATABASE_URL aus ENV:', process.env.DATABASE_URL);
+console.log('SENDGRID_API_KEY aus ENV:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
+console.log('JWT_SECRET aus ENV:', process.env.JWT_SECRET ? 'gesetzt' : 'NICHT gesetzt');
+console.log('PORT aus ENV:', process.env.PORT);
+console.log('MAIL_FROM aus ENV:', process.env.MAIL_FROM);
+
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
