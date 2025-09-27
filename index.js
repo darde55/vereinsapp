@@ -101,6 +101,23 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// --- Eigene Termine (NEU!) ---
+app.get('/api/profile/termine', authenticateToken, async (req, res) => {
+  try {
+    // Hole alle Termine, für die der aktuelle User angemeldet ist
+    const result = await pool.query(
+      `SELECT t.* FROM termine t
+       JOIN teilnahmen tn ON t.id = tn.termin_id
+       WHERE tn.username = $1
+       ORDER BY t.datum ASC`,
+      [req.user.username]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Laden deiner Termine', error: err.message });
+  }
+});
+
 // --- Benutzerverwaltung (Admin) ---
 // Alle Benutzer anzeigen
 app.get('/api/users', authenticateToken, async (req, res) => {
@@ -221,7 +238,6 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
 // --- Teilnahme an/abmelden (mit Bestätigungsmail) ---
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
-  // allow admin to specify username in body, otherwise use req.user.username
   const username = req.body.username || req.user.username;
   try {
     await pool.query(
@@ -237,7 +253,6 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
       const userEmail = userRes.rows[0].email;
       const termin = terminRes.rows[0];
 
-      // Sende Bestätigungsmail an User
       await sgMail.send({
         to: userEmail,
         from: process.env.MAIL_FROM,
@@ -333,7 +348,6 @@ cron.schedule('0 7 * * *', async () => {
               'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING',
               [termin.id, user.username]
             );
-            // E-Mail an automatisch zugewiesenen User
             await sgMail.send({
               to: user.email,
               from: process.env.MAIL_FROM,
