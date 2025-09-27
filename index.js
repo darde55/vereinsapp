@@ -20,15 +20,25 @@ const pool = new Pool({
 app.use(cors());
 app.use(express.json());
 
-// --- JWT Auth Middleware ---
+// --- JWT Auth Middleware mit Logging ---
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ message: 'Token fehlt' });
+  console.log('--- AUTH LOG ---');
+  console.log('Authorization Header:', authHeader);
+  console.log('Extracted Token:', token);
+  if (!token) {
+    console.log('Token fehlt!');
+    return res.status(401).json({ message: 'Token fehlt' });
+  }
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ message: 'Token ungültig' });
+    if (err) {
+      console.log('JWT Verify Error:', err.message);
+      return res.status(403).json({ message: 'Token ungültig' });
+    }
     req.user = user;
+    console.log('Token gültig für User:', user);
     next();
   });
 }
@@ -104,7 +114,6 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
 // --- Eigene Termine (NEU!) ---
 app.get('/api/profile/termine', authenticateToken, async (req, res) => {
   try {
-    // Hole alle Termine, für die der aktuelle User angemeldet ist
     const result = await pool.query(
       `SELECT t.* FROM termine t
        JOIN teilnahmen tn ON t.id = tn.termin_id
