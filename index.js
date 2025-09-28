@@ -35,15 +35,19 @@ app.use(express.json());
 // --- JWT Auth Middleware ---
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
+  console.log('[Auth] Authorization Header:', authHeader);
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) {
+    console.log('[Auth] Kein Token gefunden!');
     return res.status(401).json({ message: 'Token fehlt' });
   }
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) {
+      console.log('[Auth] Token ungültig!', err);
       return res.status(403).json({ message: 'Token ungültig' });
     }
     req.user = user;
+    console.log('[Auth] Token gültig, User:', user);
     next();
   });
 }
@@ -56,7 +60,9 @@ app.get('/api/ping', (req, res) => {
 // --- Registrierung ---
 app.post('/api/register', async (req, res) => {
   const { username, email, password, role } = req.body;
+  console.log('[Register] Input:', req.body);
   if (!username || !email || !password || !role) {
+    console.log('[Register] Fehlende Felder!');
     return res.status(400).json({ message: 'Fehlende Felder!' });
   }
   try {
@@ -65,9 +71,10 @@ app.post('/api/register', async (req, res) => {
       'INSERT INTO users (username, email, password, role) VALUES ($1, $2, $3, $4)',
       [username, email, hashedPassword, role]
     );
+    console.log('[Register] User registriert:', username);
     res.status(201).json({ message: 'User registriert' });
   } catch (err) {
-    console.error('Fehler bei Registrierung:', err);
+    console.error('[Register] Fehler:', err);
     if (err.code === '23505') {
       res.status(409).json({ message: 'Username existiert bereits' });
     } else {
@@ -79,6 +86,7 @@ app.post('/api/register', async (req, res) => {
 // --- Login ---
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
+  console.log('[Login] Input:', req.body);
   if (!username || !password)
     return res.status(400).json({ message: 'Fehlende Felder!' });
 
@@ -96,15 +104,17 @@ app.post('/api/login', async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
+    console.log('[Login] Erfolgreich, User:', user.username);
     res.json({ token, username: user.username, role: user.role });
   } catch (err) {
-    console.error('Fehler beim Login:', err);
+    console.error('[Login] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Login', error: err.message });
   }
 });
 
 // --- Profil (geschützt) ---
 app.get('/api/profile', authenticateToken, async (req, res) => {
+  console.log('[Profile] User:', req.user.username);
   try {
     const result = await pool.query(
       'SELECT username, email, role, score FROM users WHERE username = $1',
@@ -114,13 +124,14 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'User nicht gefunden' });
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Fehler beim Laden des Profils:', err);
+    console.error('[Profile] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Laden des Profils', error: err.message });
   }
 });
 
 // --- Eigene Termine ---
 app.get('/api/profile/termine', authenticateToken, async (req, res) => {
+  console.log('[Profile/Termine] User:', req.user.username);
   try {
     const result = await pool.query(
       `SELECT t.* FROM termine t
@@ -131,7 +142,7 @@ app.get('/api/profile/termine', authenticateToken, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('Fehler beim Laden deiner Termine:', err);
+    console.error('[Profile/Termine] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Laden deiner Termine', error: err.message });
   }
 });
@@ -142,7 +153,7 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     const result = await pool.query('SELECT username, email, role, score FROM users');
     res.json(result.rows);
   } catch (err) {
-    console.error('Fehler beim Laden der Benutzer:', err);
+    console.error('[Users] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Laden der Benutzer', error: err.message });
   }
 });
@@ -160,7 +171,7 @@ app.post('/api/users', authenticateToken, async (req, res) => {
     );
     res.status(201).json({ message: 'User angelegt' });
   } catch (err) {
-    console.error('Fehler beim Anlegen des Benutzers:', err);
+    console.error('[Users] Fehler:', err);
     if (err.code === '23505') {
       res.status(409).json({ message: 'Username existiert bereits' });
     } else {
@@ -179,7 +190,7 @@ app.put('/api/users/:username', authenticateToken, async (req, res) => {
     );
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Fehler beim Bearbeiten des Benutzers:', err);
+    console.error('[Users] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Bearbeiten des Benutzers', error: err.message });
   }
 });
@@ -190,7 +201,7 @@ app.delete('/api/users/:username', authenticateToken, async (req, res) => {
     await pool.query('DELETE FROM users WHERE username = $1', [username]);
     res.json({ message: 'Benutzer gelöscht' });
   } catch (err) {
-    console.error('Fehler beim Löschen des Benutzers:', err);
+    console.error('[Users] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Löschen des Benutzers', error: err.message });
   }
 });
@@ -201,18 +212,18 @@ app.get('/api/termine', async (req, res) => {
     const termineRes = await pool.query('SELECT * FROM termine ORDER BY datum ASC');
     const termine = termineRes.rows;
 
-    // Teilnehmer für jeden Termin dazu holen
     for (const termin of termine) {
       const teilnehmerRes = await pool.query(
         `SELECT username FROM teilnahmen WHERE termin_id = $1`,
         [termin.id]
       );
-      termin.teilnehmer = teilnehmerRes.rows; // Array mit { username }
+      termin.teilnehmer = teilnehmerRes.rows;
+      console.log(`[Termine] Termin: ${termin.id}, Teilnehmer:`, termin.teilnehmer);
     }
 
     res.json(termine);
   } catch (err) {
-    console.error('Fehler beim Laden der Termine:', err);
+    console.error('[Termine] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Laden der Termine', error: err.message });
   }
 });
@@ -229,9 +240,10 @@ app.post('/api/termine', authenticateToken, async (req, res) => {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [titel, beschreibung, datum, beginn, ende, anzahl, stichtag, ansprechpartner_name, ansprechpartner_mail, score || 0]
     );
+    console.log('[Termine] Neuer Termin:', result.rows[0]);
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error('Fehler beim Erstellen des Termins:', err);
+    console.error('[Termine] Fehler beim Erstellen:', err);
     res.status(500).json({ message: 'Fehler beim Erstellen des Termins', error: err.message });
   }
 });
@@ -250,9 +262,10 @@ app.put('/api/termine/:id', authenticateToken, async (req, res) => {
       WHERE id=$12 RETURNING *`,
       [titel, beschreibung, datum, beginn, ende, anzahl, stichtag, ansprechpartner_name, ansprechpartner_mail, score, stichtag_mail_gesendet, id]
     );
+    console.log('[Termine] Termin bearbeitet:', result.rows[0]);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Fehler beim Bearbeiten des Termins:', err);
+    console.error('[Termine] Fehler beim Bearbeiten:', err);
     res.status(500).json({ message: 'Fehler beim Bearbeiten des Termins', error: err.message });
   }
 });
@@ -261,21 +274,42 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
   const id = req.params.id;
   try {
     await pool.query('DELETE FROM termine WHERE id = $1', [id]);
+    console.log('[Termine] Termin gelöscht:', id);
     res.json({ message: 'Termin gelöscht' });
   } catch (err) {
-    console.error('Fehler beim Löschen des Termins:', err);
+    console.error('[Termine] Fehler beim Löschen:', err);
     res.status(500).json({ message: 'Fehler beim Löschen des Termins', error: err.message });
   }
 });
 
+// --- Teilnahme an/abmelden (mit Logging!) ---
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
   const username = req.body.username || req.user.username;
+  console.log(`[Teilnahme] Versuch für Termin ${termin_id} mit User ${username}`);
   try {
-    await pool.query(
-      'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    // Prüfe, ob User existiert
+    const userCheck = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    console.log('[Teilnahme] UserCheck:', userCheck.rows);
+
+    // Prüfe, ob Teilnahme schon existiert
+    const check = await pool.query(
+      'SELECT * FROM teilnahmen WHERE termin_id = $1 AND username = $2',
       [termin_id, username]
     );
+    console.log('[Teilnahme] TeilnahmeCheck:', check.rows);
+
+    if (check.rows.length > 0) {
+      console.log('[Teilnahme] User ist bereits Teilnehmer!');
+      return res.status(409).json({ message: 'Du bist bereits für diesen Termin angemeldet.' });
+    }
+
+    // Teilnahme eintragen
+    const result = await pool.query(
+      'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2) RETURNING *',
+      [termin_id, username]
+    );
+    console.log('[Teilnahme] InsertResult:', result.rows);
 
     // Hole E-Mail und Termin-Infos für Bestätigung
     const userRes = await pool.query('SELECT email FROM users WHERE username = $1', [username]);
@@ -306,7 +340,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
 
     res.json({ message: 'Teilnahme gespeichert und Bestätigungsmail versendet (oder Fehler geloggt)' });
   } catch (err) {
-    console.error('Fehler bei Teilnahme:', err);
+    console.error('[Teilnahme] Fehler:', err);
     if (err.stack) console.error(err.stack);
     res.status(500).json({ message: 'Fehler bei Teilnahme', error: err.message });
   }
@@ -320,9 +354,10 @@ app.delete('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) =>
       'DELETE FROM teilnahmen WHERE termin_id = $1 AND username = $2',
       [termin_id, username]
     );
+    console.log(`[Teilnahme] User ${username} von Termin ${termin_id} entfernt`);
     res.json({ message: 'Teilnahme entfernt' });
   } catch (err) {
-    console.error('Fehler beim Entfernen der Teilnahme:', err);
+    console.error('[Teilnahme] Fehler beim Entfernen:', err);
     res.status(500).json({ message: 'Fehler beim Entfernen der Teilnahme', error: err.message });
   }
 });
@@ -337,9 +372,10 @@ app.get('/api/termine/:id/teilnehmer', authenticateToken, async (req, res) => {
        WHERE teilnahmen.termin_id = $1`,
       [termin_id]
     );
+    console.log(`[Teilnehmer] Termin ${termin_id}:`, result.rows);
     res.json(result.rows);
   } catch (err) {
-    console.error('Fehler beim Laden der Teilnehmer:', err);
+    console.error('[Teilnehmer] Fehler:', err);
     res.status(500).json({ message: 'Fehler beim Laden der Teilnehmer', error: err.message });
   }
 });
