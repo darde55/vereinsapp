@@ -5,7 +5,8 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const sgMail = require('@sendgrid/mail');
+const sgMail = require('./.gitignore/node_modules/@sendgrid/mail');
+const cron = require('./.gitignore/node_modules/node-cron/dist/cjs/node-cron');
 const app = express();
 
 const PORT = process.env.PORT || 8080;
@@ -219,13 +220,58 @@ app.get('/api/termine', async (req, res) => {
   }
 });
 
+// --- Termin anlegen ---
+app.post('/api/termine', authenticateToken, async (req, res) => {
+  const {
+    titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
+    ansprechpartner_name, ansprechpartner_mail, score,
+    stichtagsmail_senden, zufallsauswahl
+  } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO termine (titel, beschreibung, datum, beginn, ende, anzahl, stichtag, ansprechpartner_name, ansprechpartner_mail, score, stichtagsmail_senden, zufallsauswahl)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [
+        titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
+        ansprechpartner_name, ansprechpartner_mail, score || 0,
+        stichtagsmail_senden || false, zufallsauswahl || false
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Anlegen des Termins', error: err.message });
+  }
+});
+
+// --- Termin bearbeiten ---
+app.put('/api/termine/:id', authenticateToken, async (req, res) => {
+  const id = req.params.id;
+  const {
+    titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
+    ansprechpartner_name, ansprechpartner_mail, score,
+    stichtagsmail_senden, zufallsauswahl
+  } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE termine SET titel=$1, beschreibung=$2, datum=$3, beginn=$4, ende=$5, anzahl=$6, stichtag=$7, ansprechpartner_name=$8, ansprechpartner_mail=$9, score=$10, stichtagsmail_senden=$11, zufallsauswahl=$12
+      WHERE id=$13 RETURNING *`,
+      [
+        titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
+        ansprechpartner_name, ansprechpartner_mail, score || 0,
+        stichtagsmail_senden || false, zufallsauswahl || false, id
+      ]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Bearbeiten des Termins', error: err.message });
+  }
+});
+
 // --- Termin löschen (Admin) ---
 app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
   try {
-    // Lösche zuerst alle Teilnahmen zu diesem Termin
     await pool.query('DELETE FROM teilnahmen WHERE termin_id = $1', [termin_id]);
-    // Lösche dann den Termin selbst
     const result = await pool.query('DELETE FROM termine WHERE id = $1 RETURNING *', [termin_id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Termin nicht gefunden' });
@@ -324,6 +370,88 @@ app.delete('/api/termine/:id/teilnehmer/:username', authenticateToken, async (re
     res.json({ message: `Teilnehmer ${username} von Termin ${termin_id} entfernt.` });
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Entfernen des Teilnehmers', error: err.message });
+  }
+});
+
+// --- CRONJOB: Stichtagsmail & Zufallsauswahl ---
+cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
+  const heute = new Date().toISOString().slice(0, 10);
+  try {
+    // 1. Stichtagsmail senden
+    const termineMail = await pool.query(
+      "SELECT * FROM termine WHERE stichtagsmail_senden = true AND stichtag = $1",
+      [heute]
+    );
+    for (const termin of termineMail.rows) {
+      const teilnahmen = await pool.query(
+        "SELECT username FROM teilnahmen WHERE termin_id = $1",
+        [termin.id]
+      );
+      const userList = teilnahmen.rows.map(u => u.username).join(", ");
+      if (termin.ansprechpartner_mail) {
+        const mailMsg = {
+          to: termin.ansprechpartner_mail,
+          from: process.env.MAIL_FROM,
+          subject: `Stichtagsmail für Termin "${termin.titel}"`,
+          text: `Angemeldete Personen: ${userList}`,
+          html: `<p>Angemeldete Personen für <b>${termin.titel}</b>:<br>${userList.replace(/, /g, "<br>")}</p>`
+        };
+        try {
+          await sgMail.send(mailMsg);
+        } catch (mailErr) {
+          console.error('[Stichtagsmail] Fehler beim Mailversand:', mailErr);
+        }
+      }
+    }
+
+    // 2. Zufallsauswahl durchführen
+    const termineZufall = await pool.query(
+      "SELECT * FROM termine WHERE zufallsauswahl = true AND stichtag = $1",
+      [heute]
+    );
+    for (const termin of termineZufall.rows) {
+      // Teilnehmer holen
+      const teilnahmen = await pool.query(
+        "SELECT username FROM teilnahmen WHERE termin_id = $1",
+        [termin.id]
+      );
+      const angemeldet = teilnahmen.rows.map(u => u.username);
+      const rest = (termin.anzahl || 0) - angemeldet.length;
+      if (rest > 0) {
+        // Alle User mit niedrigstem Score, die noch nicht angemeldet sind
+        const alleUser = await pool.query(
+          `SELECT username, score FROM users 
+           WHERE username NOT IN (
+             SELECT username FROM teilnahmen WHERE termin_id = $1
+           ) ORDER BY score ASC`,
+          [termin.id]
+        );
+        // Kandidaten mit niedrigstem Score
+        let kandidaten = [];
+        if (alleUser.rows.length > 0) {
+          const minScore = alleUser.rows[0].score;
+          kandidaten = alleUser.rows.filter(u => u.score === minScore);
+          // Falls zu wenig: auch die nächsten Scores dazunehmen
+          let i = 1;
+          while (kandidaten.length < rest && alleUser.rows[i]) {
+            if (alleUser.rows[i].score > minScore) kandidaten.push(alleUser.rows[i]);
+            i++;
+          }
+        }
+        // Zufällig auswählen
+        const shuffled = kandidaten.sort(() => 0.5 - Math.random());
+        const zufallsUser = shuffled.slice(0, rest);
+        for (const user of zufallsUser) {
+          await pool.query(
+            "INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)",
+            [termin.id, user.username]
+          );
+        }
+      }
+    }
+    console.log(`[CRON] Stichtagsmail/Zufallsauswahl am ${heute} durchgeführt.`);
+  } catch (err) {
+    console.error('[CRON] Fehler:', err);
   }
 });
 
