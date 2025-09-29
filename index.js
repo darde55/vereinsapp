@@ -6,7 +6,6 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
-const fs = require('fs');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
@@ -15,7 +14,7 @@ const PORT = process.env.PORT || 3000;
 console.log('===== ENV Logging =====');
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
-console.log('JWT_SECRET:', process.env.JWT_SECRET ? 'gesetzt' : 'NICHT gesetzt');
+console.log('JWT_SECRET:', process.env.JWT_SECRET);
 console.log('PORT:', PORT);
 console.log('MAIL_FROM:', process.env.MAIL_FROM);
 console.log('=======================');
@@ -47,20 +46,20 @@ process.on('unhandledRejection', (reason, promise) => {
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  console.log('[Auth] Header:', authHeader, '| Token:', token);
+  console.log('[Auth] Request Header:', authHeader);
   if (!token) {
     console.log('[Auth] Kein Token gefunden!');
     return res.status(401).json({ message: 'Token fehlt' });
   }
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
-      console.log('[Auth] Token ungültig!', err);
-      return res.status(403).json({ message: 'Token ungültig' });
-    }
-    req.user = user;
-    console.log('[Auth] Token gültig, User:', user);
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    console.log('[Auth] Token gültig, decoded User:', decoded);
     next();
-  });
+  } catch (err) {
+    console.log('[Auth] Token ungültig! Fehler:', err.message);
+    return res.status(403).json({ message: 'Token ungültig', error: err.message });
+  }
 }
 
 // --- Healthcheck ---
@@ -132,17 +131,24 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/profile', authenticateToken, async (req, res) => {
   console.log('==== /api/profile ====');
   console.log('[Profile] JWT User:', req.user);
+
+  // Logging alle Request-Header
+  console.log('[Profile] Request Headers:', req.headers);
+
   try {
-    console.log('[Profile] Query mit username:', req.user.username);
+    // Query Case-insensitive (LOWER), für Debug
+    const username = req.user.username;
+    console.log('[Profile] Query mit username:', username);
+
     const result = await pool.query(
-      'SELECT username, email, role, score FROM users WHERE username = $1',
-      [req.user.username]
+      'SELECT username, email, role, score FROM users WHERE LOWER(username) = LOWER($1)',
+      [username]
     );
     console.log('[Profile] DB-Ergebnis:', result.rows);
 
     if (result.rows.length === 0) {
-      console.log('[Profile] Kein User gefunden mit:', req.user.username);
-      return res.status(404).json({ message: 'User nicht gefunden' });
+      console.log('[Profile] Kein User gefunden mit:', username);
+      return res.status(404).json({ message: `User ${username} nicht gefunden` });
     }
 
     const user = result.rows[0];
