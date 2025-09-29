@@ -6,6 +6,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
+const fs = require('fs');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
@@ -15,7 +16,7 @@ console.log('===== ENV Logging =====');
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
 console.log('JWT_SECRET:', process.env.JWT_SECRET ? 'gesetzt' : 'NICHT gesetzt');
-console.log('PORT:', process.env.PORT);
+console.log('PORT:', PORT);
 console.log('MAIL_FROM:', process.env.MAIL_FROM);
 console.log('=======================');
 
@@ -33,6 +34,14 @@ const pool = new Pool({
 
 app.use(cors());
 app.use(express.json());
+
+// --- Global Error Logging ---
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+});
 
 // --- JWT Auth Middleware ---
 function authenticateToken(req, res, next) {
@@ -121,6 +130,7 @@ app.post('/api/login', async (req, res) => {
 
 // --- Profil (geschützt) ---
 app.get('/api/profile', authenticateToken, async (req, res) => {
+  console.log('==== /api/profile ====');
   console.log('[Profile] JWT User:', req.user);
   try {
     console.log('[Profile] Query mit username:', req.user.username);
@@ -136,7 +146,6 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
     }
 
     const user = result.rows[0];
-    // Guarantee: always return all properties!
     const responseObj = {
       username: user.username || "",
       email: user.email || "",
