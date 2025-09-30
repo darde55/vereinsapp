@@ -5,8 +5,9 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const sgMail = require('./.gitignore/node_modules/@sendgrid/mail');
-const cron = require('./.gitignore/node_modules/node-cron/dist/cjs/node-cron');
+const sgMail = require('@sendgrid/mail');
+const cron = require('node-cron');
+const { createEvent } = require('ics');
 const app = express();
 
 const PORT = process.env.PORT || 8080;
@@ -299,7 +300,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
       [termin_id, username]
     );
 
-    // --- Email-Funktion: schicke E-Mail an User ---
+    // --- Email-Funktion: schicke E-Mail an User mit ICS ---
     if (process.env.SENDGRID_API_KEY && process.env.MAIL_FROM) {
       const userResult = await pool.query('SELECT email FROM users WHERE username = $1', [username]);
       if (userResult.rows.length > 0) {
@@ -313,11 +314,36 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
           text: `Du bist für den Termin "${termin.titel}" am ${termin.datum} angemeldet.`,
           html: `<p>Du bist für den Termin <b>${termin.titel}</b> am <b>${termin.datum}</b> angemeldet.</p>`
         };
-        try {
-          await sgMail.send(mailMsg);
-        } catch (mailErr) {
-          console.error('[Teilnahme] Fehler beim Mailversand:', mailErr);
-        }
+
+        // ICS erstellen und anhängen
+        const [year, month, day] = termin.datum.split('-').map(Number);
+        const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
+        const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
+
+        const icsEvent = {
+          start: [year, month, day, startHour, startMinute],
+          end: [year, month, day, endHour, endMinute],
+          title: termin.titel,
+          description: termin.beschreibung || "",
+          location: "",
+          status: 'CONFIRMED',
+          organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
+        };
+
+        createEvent(icsEvent, (error, value) => {
+          if (error) {
+            console.error('Fehler beim Generieren der ICS-Datei:', error);
+            sgMail.send(mailMsg);
+            return;
+          }
+          mailMsg.attachments = [{
+            content: Buffer.from(value).toString('base64'),
+            filename: 'termin.ics',
+            type: 'text/calendar',
+            disposition: 'attachment'
+          }];
+          sgMail.send(mailMsg);
+        });
       }
     }
 
@@ -396,11 +422,33 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
           text: `Angemeldete Personen: ${userList}`,
           html: `<p>Angemeldete Personen für <b>${termin.titel}</b>:<br>${userList.replace(/, /g, "<br>")}</p>`
         };
-        try {
-          await sgMail.send(mailMsg);
-        } catch (mailErr) {
-          console.error('[Stichtagsmail] Fehler beim Mailversand:', mailErr);
-        }
+
+        // ICS erstellen und anhängen
+        const [year, month, day] = termin.datum.split('-').map(Number);
+        const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
+        const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
+
+        const icsEvent = {
+          start: [year, month, day, startHour, startMinute],
+          end: [year, month, day, endHour, endMinute],
+          title: termin.titel,
+          description: termin.beschreibung || "",
+          location: "",
+          status: 'CONFIRMED',
+          organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
+        };
+
+        createEvent(icsEvent, (error, value) => {
+          if (!error && value) {
+            mailMsg.attachments = [{
+              content: Buffer.from(value).toString('base64'),
+              filename: 'termin.ics',
+              type: 'text/calendar',
+              disposition: 'attachment'
+            }];
+          }
+          sgMail.send(mailMsg);
+        });
       }
     }
 
