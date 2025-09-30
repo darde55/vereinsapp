@@ -221,6 +221,8 @@ app.put('/api/users/:username', authenticateToken, async (req, res) => {
 app.delete('/api/users/:username', authenticateToken, async (req, res) => {
   const username = req.params.username;
   try {
+    // NEU: Erst alle teilnahmen zum User löschen!
+    await pool.query('DELETE FROM teilnahmen WHERE username = $1', [username]);
     await pool.query('DELETE FROM users WHERE username = $1', [username]);
     res.json({ message: 'Benutzer gelöscht' });
   } catch (err) {
