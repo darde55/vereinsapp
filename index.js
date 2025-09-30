@@ -132,6 +132,31 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// --- Passwort ändern (geschützt für User/Admin) ---
+app.post('/api/profile/password', authenticateToken, async (req, res) => {
+  const username = req.user.username;
+  const { oldPassword, newPassword } = req.body;
+  if (!oldPassword || !newPassword) {
+    return res.status(400).json({ message: "Bitte altes und neues Passwort angeben." });
+  }
+  try {
+    const result = await pool.query('SELECT password FROM users WHERE username = $1', [username]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "User nicht gefunden." });
+    }
+    const user = result.rows[0];
+    const pwOk = await bcrypt.compare(oldPassword, user.password);
+    if (!pwOk) {
+      return res.status(403).json({ message: "Altes Passwort ist falsch." });
+    }
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password = $1 WHERE username = $2', [hashed, username]);
+    res.json({ message: "Passwort erfolgreich geändert." });
+  } catch (err) {
+    res.status(500).json({ message: "Fehler beim Passwortwechsel.", error: err.message });
+  }
+});
+
 // --- Eigene Termine ---
 app.get('/api/profile/termine', authenticateToken, async (req, res) => {
   try {
