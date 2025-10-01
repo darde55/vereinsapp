@@ -1,4 +1,5 @@
-// Komplett: Backend mit erweitertem Logging und Analyse für ICS/Mail-Fehler
+// Vollständiger Backend-Code mit robustem ICS-Datum-Handling und Logging
+
 require('dotenv').config();
 
 const express = require('express');
@@ -311,7 +312,6 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
 });
 
 // --- Teilnahme an/abmelden ---
-// Logging für ICS/Mail-Fehler!
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
   const username = req.body.username || req.user.username;
@@ -344,7 +344,14 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
         };
 
         try {
-          const [year, month, day] = termin.datum.split('-').map(Number);
+          // --- Robust: ISO-String oder Date-Objekt, hole YYYY-MM-DD ---
+          let datumStr = "";
+          if (typeof termin.datum === "string") {
+            datumStr = termin.datum.split('T')[0];
+          } else {
+            datumStr = new Date(termin.datum).toISOString().split('T')[0];
+          }
+          const [year, month, day] = datumStr.split('-').map(Number);
           const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
           const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
 
@@ -363,15 +370,18 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
 
           createEvent(icsEvent, (error, value) => {
             if (error) {
-              console.error('Fehler beim Generieren der ICS-Datei:', error);
-              // Fehler an den Client zurückgeben
-              res.status(500).json({
-                message: 'Fehler bei Teilnahme (ICS)',
-                detail: error,
-                icsEvent
-              });
+              console.error('Fehler beim Generieren der ICS-Datei:', error, icsEvent);
+              sgMail.send(mailMsg)
+                .then(() => {
+                  res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)', icsError: error });
+                })
+                .catch(sendError => {
+                  console.error('Fehler beim Senden der Mail ohne ICS:', sendError);
+                  res.status(500).json({ message: 'Fehler beim Senden der Mail ohne ICS', detail: sendError });
+                });
               return;
             }
+            console.log('ICS-Datei-Inhalt:', value); // <--- Hier siehst du die erzeugte Datei
             mailMsg.attachments = [{
               content: Buffer.from(value).toString('base64'),
               filename: 'termin.ics',
@@ -389,10 +399,9 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
           });
         } catch (err) {
           console.error('Fehler beim Erstellen des ICS-Events:', err, termin);
-          // Sende die Mail ohne Anhang
           sgMail.send(mailMsg)
             .then(() => {
-              res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)' });
+              res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet, Fehler im Datum)', icsError: err });
             })
             .catch(sendError => {
               console.error('Fehler beim Senden der Mail ohne Anhang:', sendError);
@@ -456,7 +465,7 @@ app.delete('/api/termine/:id/teilnehmer/:username', authenticateToken, async (re
   }
 });
 
-// --- CRONJOB: Stichtagsmail & Zufallsauswahl ---
+// --- CRONJOB: Stichtagsmail & Zufallsauswahl --- (nur Logging für ICS im CRON)
 cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
   const heute = new Date().toISOString().slice(0, 10);
   try {
@@ -480,7 +489,13 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
           html: `<p>Angemeldete Personen für <b>${termin.titel}</b>:<br>${userList.replace(/, /g, "<br>")}</p>`
         };
 
-        const [year, month, day] = termin.datum.split('-').map(Number);
+        let datumStr = "";
+        if (typeof termin.datum === "string") {
+          datumStr = termin.datum.split('T')[0];
+        } else {
+          datumStr = new Date(termin.datum).toISOString().split('T')[0];
+        }
+        const [year, month, day] = datumStr.split('-').map(Number);
         const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
         const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
 
@@ -506,7 +521,7 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
               disposition: 'attachment'
             }];
           } else if (error) {
-            console.error("Fehler beim ICS im CRON:", error);
+            console.error("Fehler beim ICS im CRON:", error, icsEvent);
           }
           sgMail.send(mailMsg);
         });
