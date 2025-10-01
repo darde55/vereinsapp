@@ -1,3 +1,4 @@
+// Komplett: Backend mit erweitertem Logging und Analyse für ICS/Mail-Fehler
 require('dotenv').config();
 
 const express = require('express');
@@ -310,6 +311,7 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
 });
 
 // --- Teilnahme an/abmelden ---
+// Logging für ICS/Mail-Fehler!
 app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
   const username = req.body.username || req.user.username;
@@ -341,41 +343,70 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
           html: `<p>Du bist für den Termin <b>${termin.titel}</b> am <b>${termin.datum}</b> angemeldet.</p>`
         };
 
-        // ICS erstellen und anhängen
-        const [year, month, day] = termin.datum.split('-').map(Number);
-        const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
-        const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
+        try {
+          const [year, month, day] = termin.datum.split('-').map(Number);
+          const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
+          const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
 
-        const icsEvent = {
-          start: [year, month, day, startHour, startMinute],
-          end: [year, month, day, endHour, endMinute],
-          title: termin.titel,
-          description: termin.beschreibung || "",
-          location: "",
-          status: 'CONFIRMED',
-          organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
-        };
+          const icsEvent = {
+            start: [year, month, day, startHour, startMinute],
+            end: [year, month, day, endHour, endMinute],
+            title: termin.titel,
+            description: termin.beschreibung || "",
+            location: "",
+            status: 'CONFIRMED',
+            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
+          };
 
-        createEvent(icsEvent, (error, value) => {
-          if (error) {
-            console.error('Fehler beim Generieren der ICS-Datei:', error);
-            sgMail.send(mailMsg);
-            return;
-          }
-          mailMsg.attachments = [{
-            content: Buffer.from(value).toString('base64'),
-            filename: 'termin.ics',
-            type: 'text/calendar',
-            disposition: 'attachment'
-          }];
-          sgMail.send(mailMsg);
-        });
+          // Logging des ICS-Objekts
+          console.log('Erzeuge ICS Event Objekt:', icsEvent);
+
+          createEvent(icsEvent, (error, value) => {
+            if (error) {
+              console.error('Fehler beim Generieren der ICS-Datei:', error);
+              // Fehler an den Client zurückgeben
+              res.status(500).json({
+                message: 'Fehler bei Teilnahme (ICS)',
+                detail: error,
+                icsEvent
+              });
+              return;
+            }
+            mailMsg.attachments = [{
+              content: Buffer.from(value).toString('base64'),
+              filename: 'termin.ics',
+              type: 'text/calendar',
+              disposition: 'attachment'
+            }];
+            sgMail.send(mailMsg)
+              .then(() => {
+                res.json({ message: 'Teilnahme gespeichert. (Mail inkl. ICS versendet)' });
+              })
+              .catch(sendError => {
+                console.error('Fehler beim Senden der Mail:', sendError);
+                res.status(500).json({ message: 'Fehler beim Senden der Mail', detail: sendError });
+              });
+          });
+        } catch (err) {
+          console.error('Fehler beim Erstellen des ICS-Events:', err, termin);
+          // Sende die Mail ohne Anhang
+          sgMail.send(mailMsg)
+            .then(() => {
+              res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)' });
+            })
+            .catch(sendError => {
+              console.error('Fehler beim Senden der Mail ohne Anhang:', sendError);
+              res.status(500).json({ message: 'Fehler beim Senden der Mail ohne ICS', detail: sendError });
+            });
+        }
+        return;
       }
     }
 
     res.json({ message: 'Teilnahme gespeichert.' });
   } catch (err) {
-    res.status(500).json({ message: 'Fehler bei Teilnahme', error: err.message });
+    console.error("Fehler im Teilnahme-Handler:", err);
+    res.status(500).json({ message: 'Fehler bei Teilnahme', error: err.message, stack: err.stack });
   }
 });
 
@@ -449,7 +480,6 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
           html: `<p>Angemeldete Personen für <b>${termin.titel}</b>:<br>${userList.replace(/, /g, "<br>")}</p>`
         };
 
-        // ICS erstellen und anhängen
         const [year, month, day] = termin.datum.split('-').map(Number);
         const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
         const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
@@ -464,6 +494,9 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
           organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
         };
 
+        // Logging des ICS-Objekts im CRON
+        console.log("CRON ICS Event Objekt:", icsEvent);
+
         createEvent(icsEvent, (error, value) => {
           if (!error && value) {
             mailMsg.attachments = [{
@@ -472,13 +505,15 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
               type: 'text/calendar',
               disposition: 'attachment'
             }];
+          } else if (error) {
+            console.error("Fehler beim ICS im CRON:", error);
           }
           sgMail.send(mailMsg);
         });
       }
     }
 
-    // 2. Zufallsauswahl durchführen
+    // 2. Zufallsauswahl durchführen (unverändert)
     const termineZufall = await pool.query(
       "SELECT * FROM termine WHERE zufallsauswahl = true AND stichtag = $1",
       [heute]
