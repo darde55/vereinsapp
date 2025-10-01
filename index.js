@@ -221,7 +221,6 @@ app.put('/api/users/:username', authenticateToken, async (req, res) => {
 app.delete('/api/users/:username', authenticateToken, async (req, res) => {
   const username = req.params.username;
   try {
-    // NEU: Erst alle teilnahmen zum User löschen!
     await pool.query('DELETE FROM teilnahmen WHERE username = $1', [username]);
     await pool.query('DELETE FROM users WHERE username = $1', [username]);
     res.json({ message: 'Benutzer gelöscht' });
@@ -253,16 +252,16 @@ app.post('/api/termine', authenticateToken, async (req, res) => {
   const {
     titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
     ansprechpartner_name, ansprechpartner_mail, score,
-    stichtagsmail_senden, zufallsauswahl
+    stichtagsmail_senden, zufallsauswahl, kategorie
   } = req.body;
   try {
     const result = await pool.query(
-      `INSERT INTO termine (titel, beschreibung, datum, beginn, ende, anzahl, stichtag, ansprechpartner_name, ansprechpartner_mail, score, stichtagsmail_senden, zufallsauswahl)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      `INSERT INTO termine (titel, beschreibung, datum, beginn, ende, anzahl, stichtag, ansprechpartner_name, ansprechpartner_mail, score, stichtagsmail_senden, zufallsauswahl, kategorie)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [
         titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
         ansprechpartner_name, ansprechpartner_mail, score || 0,
-        stichtagsmail_senden || false, zufallsauswahl || false
+        stichtagsmail_senden || false, zufallsauswahl || false, kategorie || "Sonstiges"
       ]
     );
     res.status(201).json(result.rows[0]);
@@ -277,16 +276,16 @@ app.put('/api/termine/:id', authenticateToken, async (req, res) => {
   const {
     titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
     ansprechpartner_name, ansprechpartner_mail, score,
-    stichtagsmail_senden, zufallsauswahl
+    stichtagsmail_senden, zufallsauswahl, kategorie
   } = req.body;
   try {
     const result = await pool.query(
-      `UPDATE termine SET titel=$1, beschreibung=$2, datum=$3, beginn=$4, ende=$5, anzahl=$6, stichtag=$7, ansprechpartner_name=$8, ansprechpartner_mail=$9, score=$10, stichtagsmail_senden=$11, zufallsauswahl=$12
-      WHERE id=$13 RETURNING *`,
+      `UPDATE termine SET titel=$1, beschreibung=$2, datum=$3, beginn=$4, ende=$5, anzahl=$6, stichtag=$7, ansprechpartner_name=$8, ansprechpartner_mail=$9, score=$10, stichtagsmail_senden=$11, zufallsauswahl=$12, kategorie=$13
+      WHERE id=$14 RETURNING *`,
       [
         titel, beschreibung, datum, beginn, ende, anzahl, stichtag,
         ansprechpartner_name, ansprechpartner_mail, score || 0,
-        stichtagsmail_senden || false, zufallsauswahl || false, id
+        stichtagsmail_senden || false, zufallsauswahl || false, kategorie || "Sonstiges", id
       ]
     );
     res.json(result.rows[0]);
@@ -485,7 +484,6 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
       [heute]
     );
     for (const termin of termineZufall.rows) {
-      // Teilnehmer holen
       const teilnahmen = await pool.query(
         "SELECT username FROM teilnahmen WHERE termin_id = $1",
         [termin.id]
@@ -493,7 +491,6 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
       const angemeldet = teilnahmen.rows.map(u => u.username);
       const rest = (termin.anzahl || 0) - angemeldet.length;
       if (rest > 0) {
-        // Alle User mit niedrigstem Score, die noch nicht angemeldet sind
         const alleUser = await pool.query(
           `SELECT username, score FROM users 
            WHERE username NOT IN (
@@ -501,19 +498,16 @@ cron.schedule('0 2 * * *', async () => { // Täglich um 02:00 Uhr
            ) ORDER BY score ASC`,
           [termin.id]
         );
-        // Kandidaten mit niedrigstem Score
         let kandidaten = [];
         if (alleUser.rows.length > 0) {
           const minScore = alleUser.rows[0].score;
           kandidaten = alleUser.rows.filter(u => u.score === minScore);
-          // Falls zu wenig: auch die nächsten Scores dazunehmen
           let i = 1;
           while (kandidaten.length < rest && alleUser.rows[i]) {
             if (alleUser.rows[i].score > minScore) kandidaten.push(alleUser.rows[i]);
             i++;
           }
         }
-        // Zufällig auswählen
         const shuffled = kandidaten.sort(() => 0.5 - Math.random());
         const zufallsUser = shuffled.slice(0, rest);
         for (const user of zufallsUser) {
