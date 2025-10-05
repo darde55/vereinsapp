@@ -1,10 +1,24 @@
 const express = require('express');
 const router = express.Router();
 const { Pool } = require('pg');
+const jwt = require('jsonwebtoken');
+
+// Nutze dieselbe Pool-Konfiguration wie in index.js!
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
-// Auth-Middleware sollte separat ausgelagert werden!
-const authenticateToken = require('./authenticateToken'); // Empfohlen: Eigene Datei für Middleware
+// Auth-Middleware direkt hier definieren
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ message: 'Token fehlt' });
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(403).json({ message: 'Token ungültig', error: err.message });
+  }
+}
 
 // --- Alle Kühlschränke mit Inhalt ---
 router.get('/kuehlschraenke', authenticateToken, async (req, res) => {

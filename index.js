@@ -6,20 +6,23 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
-const cron = require('node-cron');
 const { createEvent } = require('ics');
 const app = express();
 
 const PORT = process.env.PORT || 8080;
 
-// --- CORS muss VOR allen Routen stehen ---
+// --- CORS muss VOR allen Routen stehen! ---
 app.use(cors({
   origin: [
     "https://tsv-arbeitsdienste.vercel.app",
     "http://localhost:3000"
   ],
-  credentials: true
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
+app.options('*', cors()); // Für Preflight-OPTIONS
+
 app.use(express.json());
 
 console.log('===== ENV Logging =====');
@@ -49,6 +52,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection:', reason);
 });
 
+// --- Auth-Middleware als eigene Funktion ---
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -120,7 +124,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// --- Profil (geschützt) für Dashboard ---
+// --- Profil (geschützt) ---
 app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
     const username = req.user.username;
@@ -143,7 +147,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Passwort ändern (geschützt für User/Admin) ---
+// --- Passwort ändern (geschützt) ---
 app.post('/api/profile/password', authenticateToken, async (req, res) => {
   const username = req.user.username;
   const { oldPassword, newPassword } = req.body;
@@ -366,7 +370,6 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
         };
 
         try {
-          // --- Robust: ISO-String oder Date-Objekt, hole YYYY-MM-DD ---
           let datumStr = "";
           if (typeof termin.datum === "string") {
             datumStr = termin.datum.split('T')[0];
