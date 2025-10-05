@@ -1,4 +1,4 @@
-// Backend mit ICS, Score-Addierung bei Anmeldung, Score-Abzug bei Austragen/Löschen und Zeitzone im ICS
+// Backend mit ICS, Score-Addierung bei Anmeldung, Score-Abzug bei Austragen/Löschen und Zeitzonen-Hack im ICS
 
 require('dotenv').config();
 
@@ -368,6 +368,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
           const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
           const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
 
+          // ICS Event ohne timezone-Feld!
           const icsEvent = {
             start: [year, month, day, startHour, startMinute],
             end: [year, month, day, endHour, endMinute],
@@ -375,15 +376,14 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             description: termin.beschreibung || "",
             location: "",
             status: 'CONFIRMED',
-            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" },
-            timezone: 'Europe/Berlin' // <--- Zeitzone hinzugefügt!
+            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
           };
 
           // Logging des ICS-Objekts
           console.log('Erzeuge ICS Event Objekt:', icsEvent);
 
           createEvent(icsEvent, (error, value) => {
-            if (error) {
+            if (error || !value) {
               console.error('Fehler beim Generieren der ICS-Datei:', error, icsEvent);
               sgMail.send(mailMsg)
                 .then(() => {
@@ -395,9 +395,15 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
                 });
               return;
             }
-            console.log('ICS-Datei-Inhalt:', value);
+            // Zeitzonen-Hack: Ersetze DTSTART/DTEND um Europe/Berlin zu erzwingen
+            let valueWithTz = value
+              .replace(/DTSTART:(\d{8}T\d{6})/g, 'DTSTART;TZID=Europe/Berlin:$1')
+              .replace(/DTEND:(\d{8}T\d{6})/g, 'DTEND;TZID=Europe/Berlin:$1');
+
+            console.log('ICS-Datei-Inhalt (mit Hack):', valueWithTz);
+
             mailMsg.attachments = [{
-              content: Buffer.from(value).toString('base64'),
+              content: Buffer.from(valueWithTz).toString('base64'),
               filename: 'termin.ics',
               type: 'text/calendar',
               disposition: 'attachment'
@@ -514,8 +520,7 @@ app.get('/api/termine/:id/teilnehmer', authenticateToken, async (req, res) => {
   }
 });
 
-// --- CRONJOB & Serverstart wie gehabt (unverändert) ---
-
+// --- Serverstart ---
 app.listen(PORT, () => {
   console.log(`Server läuft auf Port ${PORT}`);
 });
