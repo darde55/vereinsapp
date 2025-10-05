@@ -12,30 +12,16 @@ const app = express();
 
 const PORT = process.env.PORT || 8080;
 
-// --- CORS: Wichtig für Frontend-Login! ---
+// --- CORS muss VOR allen Routen stehen ---
 app.use(cors({
   origin: [
-    "https://tsv-arbeitsdienste.vercel.app", // Deine Vercel-Frontend-URL
-    "http://localhost:3000" // Für lokale Entwicklung
+    "https://tsv-arbeitsdienste.vercel.app",
+    "http://localhost:3000"
   ],
-  credentials: true,
+  credentials: true
 }));
 app.use(express.json());
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-// --- Fehlerbehandlung ---
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection:', reason);
-});
-
-// --- ENV Logging ---
 console.log('===== ENV Logging =====');
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
@@ -51,7 +37,18 @@ if (process.env.SENDGRID_API_KEY) {
   console.error("SendGrid API Key fehlt! Bitte prüfe deine .env Datei.");
 }
 
-// --- Middleware für Token-Auth ---
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -369,6 +366,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
         };
 
         try {
+          // --- Robust: ISO-String oder Date-Objekt, hole YYYY-MM-DD ---
           let datumStr = "";
           if (typeof termin.datum === "string") {
             datumStr = termin.datum.split('T')[0];
@@ -386,11 +384,12 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             description: termin.beschreibung || "",
             location: "",
             status: 'CONFIRMED',
-            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
+            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" },
+            timezone: 'Europe/Berlin'
           };
 
           createEvent(icsEvent, (error, value) => {
-            if (error || !value) {
+            if (error) {
               sgMail.send(mailMsg)
                 .then(() => {
                   res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)', icsError: error });
@@ -400,12 +399,8 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
                 });
               return;
             }
-            let valueWithTz = value
-              .replace(/DTSTART:(\d{8}T\d{6})/g, 'DTSTART;TZID=Europe/Berlin:$1')
-              .replace(/DTEND:(\d{8}T\d{6})/g, 'DTEND;TZID=Europe/Berlin:$1');
-
             mailMsg.attachments = [{
-              content: Buffer.from(valueWithTz).toString('base64'),
+              content: Buffer.from(value).toString('base64'),
               filename: 'termin.ics',
               type: 'text/calendar',
               disposition: 'attachment'

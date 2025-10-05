@@ -3,10 +3,10 @@ const router = express.Router();
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
-// Auth-Middleware ggf. importieren!
-const { authenticateToken } = require('./index'); // Oder separat, falls ausgelagert
+// Auth-Middleware sollte separat ausgelagert werden!
+const authenticateToken = require('./authenticateToken'); // Empfohlen: Eigene Datei für Middleware
 
-// Alle Kühlschränke mit Inhalt
+// --- Alle Kühlschränke mit Inhalt ---
 router.get('/kuehlschraenke', authenticateToken, async (req, res) => {
   try {
     const resK = await pool.query('SELECT * FROM kuehlschraenke');
@@ -26,7 +26,7 @@ router.get('/kuehlschraenke', authenticateToken, async (req, res) => {
   }
 });
 
-// Kühlschrank anlegen
+// --- Kühlschrank anlegen ---
 router.post('/kuehlschraenke', authenticateToken, async (req, res) => {
   const { name, standort } = req.body;
   try {
@@ -40,12 +40,11 @@ router.post('/kuehlschraenke', authenticateToken, async (req, res) => {
   }
 });
 
-// Produkt zu Kühlschrank hinzufügen oder Bestand ändern
+// --- Produkt zu Kühlschrank hinzufügen oder Bestand ändern ---
 router.post('/kuehlschraenke/:id/inhalt', authenticateToken, async (req, res) => {
   const kuehlschrank_id = req.params.id;
   const { name, bestand, produktId } = req.body;
   try {
-    // Produkt-Id ermitteln oder Produkt anlegen
     let prodId = produktId;
     if (!prodId) {
       const prodRes = await pool.query('SELECT id FROM produkte WHERE name = $1', [name]);
@@ -56,7 +55,6 @@ router.post('/kuehlschraenke/:id/inhalt', authenticateToken, async (req, res) =>
         prodId = prodRes.rows[0].id;
       }
     }
-    // Prüfen ob schon im Kühlschrank vorhanden
     const inhaltRes = await pool.query(
       'SELECT id FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1 AND produkt_id = $2',
       [kuehlschrank_id, prodId]
@@ -78,16 +76,20 @@ router.post('/kuehlschraenke/:id/inhalt', authenticateToken, async (req, res) =>
   }
 });
 
-// Produkt aus Kühlschrank entfernen
+// --- Produkt aus Kühlschrank entfernen ---
 router.delete('/kuehlschraenke/:id/inhalt/:produktId', authenticateToken, async (req, res) => {
-  await pool.query(
-    'DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1 AND produkt_id = $2',
-    [req.params.id, req.params.produktId]
-  );
-  res.json({ message: "Produkt entfernt" });
+  try {
+    await pool.query(
+      'DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1 AND produkt_id = $2',
+      [req.params.id, req.params.produktId]
+    );
+    res.json({ message: "Produkt entfernt" });
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Entfernen des Produkts', error: err.message });
+  }
 });
 
-// Verkauf (Kasse) – Bestand synchronisieren
+// --- Verkauf (Kasse) – Bestand synchronisieren ---
 router.post('/verkauf', authenticateToken, async (req, res) => {
   const { produktId, anzahl, kuehlschrankId } = req.body;
   try {
