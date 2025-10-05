@@ -4,7 +4,6 @@ module.exports = function(pool, authenticateToken) {
   const router = express.Router();
 
   // --- KÜHLSCHRÄNKE ---
-  // Alle Kühlschränke abfragen
   router.get('/kuehlschraenke', authenticateToken, async (req, res) => {
     try {
       const resK = await pool.query('SELECT * FROM kuehlschraenke');
@@ -24,7 +23,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Kühlschrank anlegen
   router.post('/kuehlschraenke', authenticateToken, async (req, res) => {
     const { name, standort } = req.body;
     try {
@@ -38,7 +36,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Kühlschrank löschen (inklusive aller Inhalte)
   router.delete('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1', [req.params.id]);
@@ -49,7 +46,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Einzelnen Kühlschrank abfragen
   router.get('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
       const kRes = await pool.query('SELECT * FROM kuehlschraenke WHERE id = $1', [req.params.id]);
@@ -71,15 +67,12 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // --- INHALT Kühlschrank ---
-  // Produkt hinzufügen oder bearbeiten
   router.post('/kuehlschraenke/:id/inhalt', authenticateToken, async (req, res) => {
     const kuehlschrank_id = req.params.id;
     const { name, bestand, produktId } = req.body;
     try {
       let prodId = produktId;
       if (!prodId) {
-        // Produkt-ID suchen/erstellen
         const prodRes = await pool.query('SELECT id FROM produkte WHERE name = $1', [name]);
         if (prodRes.rows.length === 0) {
           const newProd = await pool.query('INSERT INTO produkte (name) VALUES ($1) RETURNING id', [name]);
@@ -109,7 +102,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Produkt aus Kühlschrank entfernen
   router.delete('/kuehlschraenke/:id/inhalt/:produktId', authenticateToken, async (req, res) => {
     try {
       await pool.query(
@@ -122,8 +114,7 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // --- PREISLISTE (Produkte) ---
-  // Preisliste abrufen
+  // --- PREISLISTE ---
   router.get('/preisliste', authenticateToken, async (req, res) => {
     try {
       const result = await pool.query('SELECT * FROM produkte ORDER BY name ASC');
@@ -133,7 +124,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Produkt zur Preisliste hinzufügen
   router.post('/preisliste', authenticateToken, async (req, res) => {
     const { name, preis, kategorie } = req.body;
     try {
@@ -147,7 +137,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Produkt bearbeiten
   router.put('/preisliste/:id', authenticateToken, async (req, res) => {
     const { name, preis, kategorie } = req.body;
     try {
@@ -161,7 +150,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Produkt löschen
   router.delete('/preisliste/:id', authenticateToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM produkte WHERE id = $1', [req.params.id]);
@@ -171,7 +159,7 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // --- VERKAUF (KASSE) ---
+  // --- KASSE / VERKAUF ---
   router.post('/verkauf', authenticateToken, async (req, res) => {
     const { produktId, anzahl, kuehlschrankId } = req.body;
     try {
