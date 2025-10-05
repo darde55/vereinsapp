@@ -119,6 +119,24 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
+  // Gesamten Kühlschrank löschen
+  router.delete('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
+    try {
+      // Entferne zuerst alle Inhalte, dann den Kühlschrank selbst
+      await pool.query(
+        'DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1',
+        [req.params.id]
+      );
+      await pool.query(
+        'DELETE FROM kuehlschraenke WHERE id = $1',
+        [req.params.id]
+      );
+      res.json({ message: "Kühlschrank gelöscht" });
+    } catch (err) {
+      res.status(500).json({ message: 'Fehler beim Löschen des Kühlschranks', error: err.message });
+    }
+  });
+
   // Verkauf (Kasse) – Bestand synchronisieren und Verkauf speichern
   router.post('/verkauf', authenticateToken, async (req, res) => {
     const { produktId, anzahl, kuehlschrankId } = req.body;
