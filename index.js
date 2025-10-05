@@ -12,6 +12,30 @@ const app = express();
 
 const PORT = process.env.PORT || 8080;
 
+// --- CORS: Wichtig für Frontend-Login! ---
+app.use(cors({
+  origin: [
+    "https://tsv-arbeitsdienste.vercel.app", // Deine Vercel-Frontend-URL
+    "http://localhost:3000" // Für lokale Entwicklung
+  ],
+  credentials: true,
+}));
+app.use(express.json());
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+// --- Fehlerbehandlung ---
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
+// --- ENV Logging ---
 console.log('===== ENV Logging =====');
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
@@ -27,21 +51,6 @@ if (process.env.SENDGRID_API_KEY) {
   console.error("SendGrid API Key fehlt! Bitte prüfe deine .env Datei.");
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-app.use(cors());
-app.use(express.json());
-
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection:', reason);
-});
-
 // --- Middleware für Token-Auth ---
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -55,6 +64,10 @@ function authenticateToken(req, res, next) {
     return res.status(403).json({ message: 'Token ungültig', error: err.message });
   }
 }
+
+// --- Kiosk-Modul einbinden ---
+const kioskRoutes = require('./kiosk');
+app.use('/api/kiosk', kioskRoutes);
 
 // --- Healthcheck ---
 app.get('/api/ping', (req, res) => {
@@ -498,10 +511,6 @@ app.get('/api/termine/:id/teilnehmer', authenticateToken, async (req, res) => {
     res.status(500).json({ message: 'Fehler beim Laden der Teilnehmer', error: err.message });
   }
 });
-
-// --- Kiosk-Modul einbinden ---
-const kioskRoutes = require('./kiosk');
-app.use('/api/kiosk', kioskRoutes);
 
 // --- Serverstart ---
 app.listen(PORT, () => {
