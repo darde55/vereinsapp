@@ -9,7 +9,7 @@ module.exports = function(pool, authenticateToken) {
       const resK = await pool.query('SELECT * FROM kuehlschraenke');
       for (const k of resK.rows) {
         const inhalt = await pool.query(
-          `SELECT ki.id, p.name, ki.bestand, p.preis
+          `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis
            FROM kuehlschrank_inhalt ki
            JOIN produkte p ON ki.produkt_id = p.id
            WHERE ki.kuehlschrank_id = $1`,
@@ -54,7 +54,7 @@ module.exports = function(pool, authenticateToken) {
       }
       const k = kRes.rows[0];
       const inhalt = await pool.query(
-        `SELECT ki.id, p.name, ki.bestand, p.preis
+        `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis
          FROM kuehlschrank_inhalt ki
          JOIN produkte p ON ki.produkt_id = p.id
          WHERE ki.kuehlschrank_id = $1`,
@@ -67,33 +67,25 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
+  // Produkt im Kühlschrank hinzufügen oder bearbeiten
   router.post('/kuehlschraenke/:id/inhalt', authenticateToken, async (req, res) => {
     const kuehlschrank_id = req.params.id;
-    const { name, bestand, produktId } = req.body;
+    const { bestand, produktId } = req.body;
     try {
-      let prodId = produktId;
-      if (!prodId) {
-        const prodRes = await pool.query('SELECT id FROM produkte WHERE name = $1', [name]);
-        if (prodRes.rows.length === 0) {
-          const newProd = await pool.query('INSERT INTO produkte (name) VALUES ($1) RETURNING id', [name]);
-          prodId = newProd.rows[0].id;
-        } else {
-          prodId = prodRes.rows[0].id;
-        }
-      }
+      // Prüfe, ob das Produkt schon im Kühlschrank ist
       const inhaltRes = await pool.query(
         'SELECT id FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1 AND produkt_id = $2',
-        [kuehlschrank_id, prodId]
+        [kuehlschrank_id, produktId]
       );
       if (inhaltRes.rows.length === 0) {
         await pool.query(
           'INSERT INTO kuehlschrank_inhalt (kuehlschrank_id, produkt_id, bestand) VALUES ($1, $2, $3)',
-          [kuehlschrank_id, prodId, bestand]
+          [kuehlschrank_id, produktId, bestand]
         );
       } else {
         await pool.query(
           'UPDATE kuehlschrank_inhalt SET bestand = $1 WHERE kuehlschrank_id = $2 AND produkt_id = $3',
-          [bestand, kuehlschrank_id, prodId]
+          [bestand, kuehlschrank_id, produktId]
         );
       }
       res.json({ message: "Produkt gespeichert" });
@@ -102,6 +94,7 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
+  // Produkt aus Kühlschrank entfernen
   router.delete('/kuehlschraenke/:id/inhalt/:produktId', authenticateToken, async (req, res) => {
     try {
       await pool.query(
