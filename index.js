@@ -1,4 +1,4 @@
-// Backend mit ICS, Score-Addierung bei Anmeldung und Score-Abzug bei Austragen/Löschen
+// Backend mit ICS, Score-Addierung bei Anmeldung, Score-Abzug bei Austragen/Löschen und Zeitzone im ICS
 
 require('dotenv').config();
 
@@ -375,7 +375,8 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             description: termin.beschreibung || "",
             location: "",
             status: 'CONFIRMED',
-            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
+            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" },
+            timezone: 'Europe/Berlin' // <--- Zeitzone hinzugefügt!
           };
 
           // Logging des ICS-Objekts
