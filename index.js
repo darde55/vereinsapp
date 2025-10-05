@@ -11,7 +11,7 @@ const app = express();
 
 const PORT = process.env.PORT || 8080;
 
-// --- CORS muss VOR allen Routen stehen! ---
+// --- CORS ganz oben ---
 app.use(cors({
   origin: [
     "https://tsv-arbeitsdienste.vercel.app",
@@ -21,8 +21,7 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
-app.options('*', cors()); // Für Preflight-OPTIONS
-
+app.options('*', cors());
 app.use(express.json());
 
 console.log('===== ENV Logging =====');
@@ -45,14 +44,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection:', reason);
-});
-
-// --- Auth-Middleware als eigene Funktion ---
+// --- Auth-Middleware ---
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -67,7 +59,7 @@ function authenticateToken(req, res, next) {
 }
 
 // --- Kiosk-Modul einbinden ---
-const kioskRoutes = require('./kiosk');
+const kioskRoutes = require('./kiosk')(pool, authenticateToken);
 app.use('/api/kiosk', kioskRoutes);
 
 // --- Healthcheck ---
@@ -387,12 +379,11 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             description: termin.beschreibung || "",
             location: "",
             status: 'CONFIRMED',
-            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" },
-            timezone: 'Europe/Berlin'
+            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
           };
 
           createEvent(icsEvent, (error, value) => {
-            if (error) {
+            if (error || !value) {
               sgMail.send(mailMsg)
                 .then(() => {
                   res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)', icsError: error });
@@ -402,8 +393,12 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
                 });
               return;
             }
+            let valueWithTz = value
+              .replace(/DTSTART:(\d{8}T\d{6})/g, 'DTSTART;TZID=Europe/Berlin:$1')
+              .replace(/DTEND:(\d{8}T\d{6})/g, 'DTEND;TZID=Europe/Berlin:$1');
+
             mailMsg.attachments = [{
-              content: Buffer.from(value).toString('base64'),
+              content: Buffer.from(valueWithTz).toString('base64'),
               filename: 'termin.ics',
               type: 'text/calendar',
               disposition: 'attachment'
