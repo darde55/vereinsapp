@@ -27,7 +27,7 @@ module.exports = function(pool, authenticateToken) {
     const { name, standort } = req.body;
     try {
       const result = await pool.query(
-        'INSERT INTO kuehlschraenke (name, standort) VALUES ($1, $2) RETURNING *',
+        'INSERT INTO kuehlschränke (name, standort) VALUES ($1, $2) RETURNING *',
         [name, standort]
       );
       res.status(201).json(result.rows[0]);
@@ -39,7 +39,7 @@ module.exports = function(pool, authenticateToken) {
   router.delete('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1', [req.params.id]);
-      await pool.query('DELETE FROM kuehlschraenke WHERE id = $1', [req.params.id]);
+      await pool.query('DELETE FROM kuehlschränke WHERE id = $1', [req.params.id]);
       res.json({ message: "Kühlschrank gelöscht" });
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Löschen des Kühlschranks', error: err.message });
@@ -48,7 +48,7 @@ module.exports = function(pool, authenticateToken) {
 
   router.get('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
-      const kRes = await pool.query('SELECT * FROM kuehlschraenke WHERE id = $1', [req.params.id]);
+      const kRes = await pool.query('SELECT * FROM kuehlschränke WHERE id = $1', [req.params.id]);
       if (kRes.rows.length === 0) {
         return res.status(404).json({ message: 'Kühlschrank nicht gefunden' });
       }
@@ -153,6 +153,7 @@ module.exports = function(pool, authenticateToken) {
   });
 
   // --- KASSE / VERKAUF ---
+  // Verkaufs-Session wird im Frontend verwaltet, Verkäufe werden wie gehabt gebucht
   router.post('/verkauf', authenticateToken, async (req, res) => {
     const { produktId, anzahl, kuehlschrankId } = req.body;
     try {
@@ -168,12 +169,47 @@ module.exports = function(pool, authenticateToken) {
         [anzahl, kuehlschrankId, produktId]
       );
       await pool.query(
-        'INSERT INTO verkauf (produkt_id, anzahl, username) VALUES ($1, $2, $3)',
+        'INSERT INTO verkauf (produkt_id, anzahl, username, verkauft_am) VALUES ($1, $2, $3, NOW())',
         [produktId, anzahl, req.user.username]
       );
       res.json({ message: "Verkauf gebucht!" });
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Verkauf', error: err.message });
+    }
+  });
+
+  // --- STATISTIK ---
+  // Gesamteinnahmen pro Monat/Jahr
+  router.get('/statistik/gesamteinahmen', authenticateToken, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT DATE_TRUNC('year', verkauft_am) AS jahr,
+                DATE_TRUNC('month', verkauft_am) AS monat,
+                SUM(p.preis * v.anzahl) AS umsatz
+           FROM verkauf v
+           JOIN produkte p ON v.produkt_id = p.id
+           GROUP BY jahr, monat
+           ORDER BY jahr, monat`
+      );
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ message: 'Fehler beim Laden der Einnahmen', error: err.message });
+    }
+  });
+
+  // Produkte pro Jahr
+  router.get('/statistik/produktJahr', authenticateToken, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT p.name, EXTRACT(YEAR FROM verkauft_am) AS jahr, SUM(v.anzahl) AS verkauft
+           FROM verkauf v
+           JOIN produkte p ON v.produkt_id = p.id
+           GROUP BY p.name, jahr
+           ORDER BY jahr, p.name`
+      );
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ message: 'Fehler beim Laden der Statistik', error: err.message });
     }
   });
 
