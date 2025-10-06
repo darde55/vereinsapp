@@ -12,8 +12,7 @@ module.exports = function(pool, authenticateToken) {
           `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis, p.kategorie
            FROM kuehlschrank_inhalt ki
            JOIN produkte p ON ki.produkt_id = p.id
-           WHERE ki.kuehlschrank_id = $1`,
-          [k.id]
+           WHERE ki.kuehlschrank_id = $1`, [k.id]
         );
         k.inhalt = inhalt.rows;
       }
@@ -57,8 +56,7 @@ module.exports = function(pool, authenticateToken) {
         `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis, p.kategorie
          FROM kuehlschrank_inhalt ki
          JOIN produkte p ON ki.produkt_id = p.id
-         WHERE ki.kuehlschrank_id = $1`,
-        [k.id]
+         WHERE ki.kuehlschrank_id = $1`, [k.id]
       );
       k.inhalt = inhalt.rows;
       res.json(k);
@@ -150,7 +148,6 @@ module.exports = function(pool, authenticateToken) {
   });
 
   // --- VERKAUFSSESSION ---
-  // Session-Tabelle: verkaufssession (id, start, ende, benutzer)
   router.post('/session/start', authenticateToken, async (req, res) => {
     const benutzer = req.user.username;
     try {
@@ -158,7 +155,6 @@ module.exports = function(pool, authenticateToken) {
         'INSERT INTO verkaufssession (start, benutzer) VALUES (NOW(), $1) RETURNING id, start, benutzer',
         [benutzer]
       );
-      // Nur die Session-ID und relevante Infos zurückgeben!
       res.json(result.rows[0]);
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Starten der Session', error: err.message });
@@ -285,6 +281,24 @@ module.exports = function(pool, authenticateToken) {
       res.json(result.rows);
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Laden der Sessions', error: err.message });
+    }
+  });
+
+  // --- NEUER ENDPOINT: Produkte einer Session ---
+  router.get('/statistik/session/:id/produkte', authenticateToken, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT p.id AS produkt_id, p.name, SUM(v.anzahl) AS anzahl
+           FROM verkauf v
+           JOIN produkte p ON v.produkt_id = p.id
+           WHERE v.session_id = $1
+           GROUP BY p.id, p.name
+           ORDER BY anzahl DESC`,
+        [req.params.id]
+      );
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ message: 'Fehler beim Laden der Session-Produkte', error: err.message });
     }
   });
 
