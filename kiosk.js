@@ -39,7 +39,7 @@ module.exports = function(pool, authenticateToken) {
   router.delete('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1', [req.params.id]);
-      await pool.query('DELETE FROM kuehlschraenke WHERE id = $1', [req.params.id]);
+      await pool.query('DELETE FROM kuehlschränke WHERE id = $1', [req.params.id]);
       res.json({ message: "Kühlschrank gelöscht" });
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Löschen des Kühlschranks', error: err.message });
@@ -67,7 +67,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Produkt im Kühlschrank hinzufügen oder bearbeiten
   router.post('/kuehlschraenke/:id/inhalt', authenticateToken, async (req, res) => {
     const kuehlschrank_id = req.params.id;
     const { bestand, produktId } = req.body;
@@ -150,9 +149,33 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
+  // --- VERKAUFSSESSION ---
+  // Session-Tabelle: verkaufssession (id, start, ende, benutzer)
+  router.post('/session/start', authenticateToken, async (req, res) => {
+    const benutzer = req.user.username;
+    try {
+      const result = await pool.query(
+        'INSERT INTO verkaufssession (start, benutzer) VALUES (NOW(), $1) RETURNING *',
+        [benutzer]
+      );
+      res.json(result.rows[0]);
+    } catch (err) {
+      res.status(500).json({ message: 'Fehler beim Starten der Session', error: err.message });
+    }
+  });
+
+  router.post('/session/end/:id', authenticateToken, async (req, res) => {
+    try {
+      await pool.query('UPDATE verkaufssession SET ende = NOW() WHERE id = $1', [req.params.id]);
+      res.json({ message: "Session beendet" });
+    } catch (err) {
+      res.status(500).json({ message: 'Fehler beim Beenden der Session', error: err.message });
+    }
+  });
+
   // --- KASSE / VERKAUF ---
   router.post('/verkauf', authenticateToken, async (req, res) => {
-    const { produktId, anzahl } = req.body;
+    const { produktId, anzahl, sessionId } = req.body;
     const username = req.user && req.user.username;
     try {
       const inhaltRes = await pool.query(
@@ -173,8 +196,8 @@ module.exports = function(pool, authenticateToken) {
             [abzuziehen, row.id]
           );
           await pool.query(
-            'INSERT INTO verkauf (produkt_id, anzahl, username, verkauft_am, kuehlschrank_id) VALUES ($1, $2, $3, NOW(), $4)',
-            [produktId, abzuziehen, username, row.kuehlschrank_id]
+            'INSERT INTO verkauf (produkt_id, anzahl, username, verkauft_am, kuehlschrank_id, session_id) VALUES ($1, $2, $3, NOW(), $4, $5)',
+            [produktId, abzuziehen, username, row.kuehlschrank_id, sessionId]
           );
           rest -= abzuziehen;
         }
@@ -246,6 +269,25 @@ module.exports = function(pool, authenticateToken) {
       res.json(result.rows);
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Laden der Verkäufe', error: err.message });
+    }
+  });
+
+  // Verkaufssessions mit Umsatz und verkaufte Produkte
+  router.get('/statistik/sessions', authenticateToken, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT s.id, s.start, s.ende, s.benutzer,
+          COALESCE(SUM(p.preis * v.anzahl), 0) AS umsatz,
+          COALESCE(SUM(v.anzahl), 0) AS produkte
+         FROM verkaufssession s
+         LEFT JOIN verkauf v ON v.session_id = s.id
+         LEFT JOIN produkte p ON v.produkt_id = p.id
+         GROUP BY s.id
+         ORDER BY s.start DESC`
+      );
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ message: 'Fehler beim Laden der Sessions', error: err.message });
     }
   });
 
