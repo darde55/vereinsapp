@@ -174,34 +174,46 @@ module.exports = function(pool, authenticateToken) {
   });
 
   // --- KASSE / VERKAUF ---
+  // Diese Route prüft den Gesamtbestand aller Kühlschränke und verteilt den Verkauf!
   router.post('/verkauf', authenticateToken, async (req, res) => {
-    const { produktId, anzahl, kuehlschrankId } = req.body;
-    console.log("[POST] /verkauf Request:", { produktId, anzahl, kuehlschrankId, username: req.user && req.user.username });
+    const { produktId, anzahl } = req.body;
+    const username = req.user && req.user.username;
+    console.log("[POST] /verkauf Request:", { produktId, anzahl, username });
+
     try {
+      // Alle Kühlschränke mit diesem Produkt, sortiert nach Bestand absteigend
       const inhaltRes = await pool.query(
-        'SELECT bestand FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1 AND produkt_id = $2',
-        [kuehlschrankId, produktId]
+        'SELECT id, kuehlschrank_id, bestand FROM kuehlschrank_inhalt WHERE produkt_id = $1 ORDER BY bestand DESC',
+        [produktId]
       );
-      console.log("[POST] /verkauf Kühlschrank-Inhalt:", inhaltRes.rows);
+      console.log("[POST] /verkauf Gesamt-Kühlschrank-Inhalt:", inhaltRes.rows);
 
-      if (inhaltRes.rows.length === 0) {
-        console.warn(`[POST] /verkauf Kein Produkt im KühlschrankId=${kuehlschrankId}, ProduktId=${produktId}`);
-        return res.status(400).json({ message: "Nicht genug Bestand!" });
-      }
-      if (inhaltRes.rows[0].bestand < anzahl) {
-        console.warn(`[POST] /verkauf Bestand zu niedrig! Ist=${inhaltRes.rows[0].bestand}, Soll=${anzahl}`);
-        return res.status(400).json({ message: "Nicht genug Bestand!" });
+      const gesamtBestand = inhaltRes.rows.reduce((sum, row) => sum + row.bestand, 0);
+      if (gesamtBestand < anzahl) {
+        console.warn(`[POST] /verkauf Gesamt-Bestand zu niedrig! Ist=${gesamtBestand}, Soll=${anzahl}`);
+        return res.status(400).json({ message: "Nicht genug Gesamtbestand!" });
       }
 
-      await pool.query(
-        'UPDATE kuehlschrank_inhalt SET bestand = bestand - $1 WHERE kuehlschrank_id = $2 AND produkt_id = $3',
-        [anzahl, kuehlschrankId, produktId]
-      );
-      await pool.query(
-        'INSERT INTO verkauf (produkt_id, anzahl, username, verkauft_am) VALUES ($1, $2, $3, NOW())',
-        [produktId, anzahl, req.user.username]
-      );
-      console.log(`[POST] /verkauf Verkauf erfolgreich: ProduktId=${produktId}, Anzahl=${anzahl}, KühlschrankId=${kuehlschrankId}, User=${req.user.username}`);
+      // Verkauf verteilen auf Kühlschränke
+      let rest = anzahl;
+      for (const row of inhaltRes.rows) {
+        if (rest <= 0) break;
+        const abzuziehen = Math.min(row.bestand, rest);
+        if (abzuziehen > 0) {
+          await pool.query(
+            'UPDATE kuehlschrank_inhalt SET bestand = bestand - $1 WHERE id = $2',
+            [abzuziehen, row.id]
+          );
+          await pool.query(
+            'INSERT INTO verkauf (produkt_id, anzahl, username, verkauft_am, kuehlschrank_id) VALUES ($1, $2, $3, NOW(), $4)',
+            [produktId, abzuziehen, username, row.kuehlschrank_id]
+          );
+          console.log(`[POST] /verkauf Abgezogen: ${abzuziehen} von Kühlschrank ${row.kuehlschrank_id}`);
+          rest -= abzuziehen;
+        }
+      }
+
+      console.log(`[POST] /verkauf Verkauf erfolgreich: ProduktId=${produktId}, Anzahl=${anzahl}, User=${username}`);
       res.json({ message: "Verkauf gebucht!" });
     } catch (err) {
       console.error("[POST] /verkauf Fehler beim Verkauf:", err);
