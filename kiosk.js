@@ -39,7 +39,7 @@ module.exports = function(pool, authenticateToken) {
   router.delete('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1', [req.params.id]);
-      await pool.query('DELETE FROM kuehlschränke WHERE id = $1', [req.params.id]);
+      await pool.query('DELETE FROM kuehlschraenke WHERE id = $1', [req.params.id]);
       res.json({ message: "Kühlschrank gelöscht" });
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Löschen des Kühlschranks', error: err.message });
@@ -155,9 +155,10 @@ module.exports = function(pool, authenticateToken) {
     const benutzer = req.user.username;
     try {
       const result = await pool.query(
-        'INSERT INTO verkaufssession (start, benutzer) VALUES (NOW(), $1) RETURNING *',
+        'INSERT INTO verkaufssession (start, benutzer) VALUES (NOW(), $1) RETURNING id, start, benutzer',
         [benutzer]
       );
+      // Nur die Session-ID und relevante Infos zurückgeben!
       res.json(result.rows[0]);
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Starten der Session', error: err.message });
@@ -209,7 +210,6 @@ module.exports = function(pool, authenticateToken) {
   });
 
   // --- STATISTIK ---
-  // Umsatz pro Monat/Jahr
   router.get('/statistik/gesamteinahmen', authenticateToken, async (req, res) => {
     try {
       const result = await pool.query(
@@ -226,7 +226,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Bestseller-Produkte pro Monat/Jahr
   router.get('/statistik/bestseller', authenticateToken, async (req, res) => {
     const { jahr, monat } = req.query;
     let where = '';
@@ -256,7 +255,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Detail-Tabelle: Alle Verkäufe (optional, für Tabelle)
   router.get('/statistik/verkaeufe', authenticateToken, async (req, res) => {
     try {
       const result = await pool.query(
@@ -272,7 +270,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Verkaufssessions mit Umsatz und verkaufte Produkte
   router.get('/statistik/sessions', authenticateToken, async (req, res) => {
     try {
       const result = await pool.query(
