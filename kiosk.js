@@ -9,7 +9,7 @@ module.exports = function(pool, authenticateToken) {
       const resK = await pool.query('SELECT * FROM kuehlschraenke');
       for (const k of resK.rows) {
         const inhalt = await pool.query(
-          `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis
+          `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis, p.kategorie
            FROM kuehlschrank_inhalt ki
            JOIN produkte p ON ki.produkt_id = p.id
            WHERE ki.kuehlschrank_id = $1`,
@@ -54,7 +54,7 @@ module.exports = function(pool, authenticateToken) {
       }
       const k = kRes.rows[0];
       const inhalt = await pool.query(
-        `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis
+        `SELECT ki.id, p.id as produkt_id, p.name, ki.bestand, p.preis, p.kategorie
          FROM kuehlschrank_inhalt ki
          JOIN produkte p ON ki.produkt_id = p.id
          WHERE ki.kuehlschrank_id = $1`,
@@ -72,7 +72,6 @@ module.exports = function(pool, authenticateToken) {
     const kuehlschrank_id = req.params.id;
     const { bestand, produktId } = req.body;
     try {
-      // Prüfe, ob das Produkt schon im Kühlschrank ist
       const inhaltRes = await pool.query(
         'SELECT id FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1 AND produkt_id = $2',
         [kuehlschrank_id, produktId]
@@ -94,7 +93,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Produkt aus Kühlschrank entfernen
   router.delete('/kuehlschraenke/:id/inhalt/:produktId', authenticateToken, async (req, res) => {
     try {
       await pool.query(
