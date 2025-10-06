@@ -27,7 +27,7 @@ module.exports = function(pool, authenticateToken) {
     const { name, standort } = req.body;
     try {
       const result = await pool.query(
-        'INSERT INTO kuehlschränke (name, standort) VALUES ($1, $2) RETURNING *',
+        'INSERT INTO kuehlschraenke (name, standort) VALUES ($1, $2) RETURNING *',
         [name, standort]
       );
       res.status(201).json(result.rows[0]);
@@ -39,7 +39,7 @@ module.exports = function(pool, authenticateToken) {
   router.delete('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
       await pool.query('DELETE FROM kuehlschrank_inhalt WHERE kuehlschrank_id = $1', [req.params.id]);
-      await pool.query('DELETE FROM kuehlschränke WHERE id = $1', [req.params.id]);
+      await pool.query('DELETE FROM kuehlschraenke WHERE id = $1', [req.params.id]);
       res.json({ message: "Kühlschrank gelöscht" });
     } catch (err) {
       res.status(500).json({ message: 'Fehler beim Löschen des Kühlschranks', error: err.message });
@@ -48,7 +48,7 @@ module.exports = function(pool, authenticateToken) {
 
   router.get('/kuehlschraenke/:id', authenticateToken, async (req, res) => {
     try {
-      const kRes = await pool.query('SELECT * FROM kuehlschränke WHERE id = $1', [req.params.id]);
+      const kRes = await pool.query('SELECT * FROM kuehlschraenke WHERE id = $1', [req.params.id]);
       if (kRes.rows.length === 0) {
         return res.status(404).json({ message: 'Kühlschrank nicht gefunden' });
       }
@@ -153,7 +153,6 @@ module.exports = function(pool, authenticateToken) {
   });
 
   // --- KASSE / VERKAUF ---
-  // Verkaufs-Session wird im Frontend verwaltet, Verkäufe werden wie gehabt gebucht
   router.post('/verkauf', authenticateToken, async (req, res) => {
     const { produktId, anzahl, kuehlschrankId } = req.body;
     try {
@@ -179,7 +178,6 @@ module.exports = function(pool, authenticateToken) {
   });
 
   // --- STATISTIK ---
-  // Gesamteinnahmen pro Monat/Jahr
   router.get('/statistik/gesamteinahmen', authenticateToken, async (req, res) => {
     try {
       const result = await pool.query(
@@ -197,7 +195,6 @@ module.exports = function(pool, authenticateToken) {
     }
   });
 
-  // Produkte pro Jahr
   router.get('/statistik/produktJahr', authenticateToken, async (req, res) => {
     try {
       const result = await pool.query(
