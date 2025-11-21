@@ -6,7 +6,6 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
-const cron = require('node-cron');
 const { createEvent } = require('ics');
 const app = express();
 
@@ -391,9 +390,16 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
                 });
               return;
             }
+            // --- VTIMEZONE-Block für Berlin ergänzen ---
             let valueWithTz = value
               .replace(/DTSTART:(\d{8}T\d{6})/g, 'DTSTART;TZID=Europe/Berlin:$1')
               .replace(/DTEND:(\d{8}T\d{6})/g, 'DTEND;TZID=Europe/Berlin:$1');
+            valueWithTz =
+              "BEGIN:VTIMEZONE\n" +
+              "TZID:Europe/Berlin\n" +
+              "BEGIN:STANDARD\nTZOFFSETFROM:+0200\nTZOFFSETTO:+0100\nDTSTART:19701025T030000\nRRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\nEND:STANDARD\n" +
+              "BEGIN:DAYLIGHT\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0200\nDTSTART:19700329T020000\nRRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\nEND:DAYLIGHT\nEND:VTIMEZONE\n" +
+              valueWithTz;
 
             mailMsg.attachments = [{
               content: Buffer.from(valueWithTz).toString('base64'),
