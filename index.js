@@ -7,9 +7,9 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
 const { createEvent } = require('ics');
+const { DateTime } = require('luxon');
 const app = express();
 
-// --- Robuste, einfache CORS-Konfiguration ---
 app.use(cors());
 app.use(express.json());
 
@@ -343,7 +343,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
       [terminScore, username]
     );
 
-    // --- Email-Funktion: schicke E-Mail an User mit ICS ---
+    // --- Email-Funktion: schicke E-Mail an User mit ICS (Luxon Fix) ---
     if (process.env.SENDGRID_API_KEY && process.env.MAIL_FROM) {
       const userResult = await pool.query('SELECT email FROM users WHERE username = $1', [username]);
       if (userResult.rows.length > 0) {
@@ -369,9 +369,32 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
           const [startHour, startMinute] = (termin.beginn || '09:00').split(':').map(Number);
           const [endHour, endMinute] = (termin.ende || '10:00').split(':').map(Number);
 
+          // Luxon: Sicher korrekte Zeitzone Europe/Berlin
+          const startBerlin = DateTime.fromObject(
+            { year, month, day, hour: startHour, minute: startMinute },
+            { zone: 'Europe/Berlin' }
+          );
+          const endBerlin = DateTime.fromObject(
+            { year, month, day, hour: endHour, minute: endMinute },
+            { zone: 'Europe/Berlin' }
+          );
+
+          // Übergebe an ICS UTC, somit TZID funktioniert in Kalendern
           const icsEvent = {
-            start: [year, month, day, startHour, startMinute],
-            end: [year, month, day, endHour, endMinute],
+            start: [
+              startBerlin.toUTC().year,
+              startBerlin.toUTC().month,
+              startBerlin.toUTC().day,
+              startBerlin.toUTC().hour,
+              startBerlin.toUTC().minute
+            ],
+            end: [
+              endBerlin.toUTC().year,
+              endBerlin.toUTC().month,
+              endBerlin.toUTC().day,
+              endBerlin.toUTC().hour,
+              endBerlin.toUTC().minute
+            ],
             title: termin.titel,
             description: termin.beschreibung || "",
             location: "",
@@ -390,7 +413,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
                 });
               return;
             }
-            // --- VTIMEZONE-Block für Berlin ergänzen ---
+            // VTIMEZONE-Block für Berlin ergänzen:
             let valueWithTz = value
               .replace(/DTSTART:(\d{8}T\d{6})/g, 'DTSTART;TZID=Europe/Berlin:$1')
               .replace(/DTEND:(\d{8}T\d{6})/g, 'DTEND;TZID=Europe/Berlin:$1');
