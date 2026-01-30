@@ -447,6 +447,17 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             { zone: 'Europe/Berlin' }
           );
 
+          // Validiere E-Mail für Organizer (ICS erfordert valide E-Mail)
+          const isValidEmail = (email) => {
+            if (!email) return false;
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return emailRegex.test(email);
+          };
+
+          const organizerEmail = isValidEmail(termin.ansprechpartner_mail) 
+            ? termin.ansprechpartner_mail 
+            : process.env.MAIL_FROM || 'noreply@example.com';
+
           // Übergebe an ICS UTC, somit TZID funktioniert in Kalendern
           const icsEvent = {
             start: [
@@ -467,7 +478,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             description: termin.beschreibung || "",
             location: "",
             status: 'CONFIRMED',
-            organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
+            organizer: { name: termin.ansprechpartner_name || "TSV Wolfschlugen", email: organizerEmail }
           };
 
           console.log('🗓️ Erstelle ICS-Event:', icsEvent);
