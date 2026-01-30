@@ -61,9 +61,11 @@ async function sendEmail({ to, from, subject, text, html, attachments }) {
       };
       
       if (icsAttachment) {
+        // Resend erwartet content als Buffer oder String, nicht base64
+        const icsContent = Buffer.from(icsAttachment.content, 'base64').toString('utf-8');
         emailData.attachments = [{
-          filename: icsAttachment.filename,
-          content: Buffer.from(icsAttachment.content, 'base64'),
+          filename: icsAttachment.filename || 'termin.ics',
+          content: icsContent,
         }];
       }
       
