@@ -470,9 +470,15 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
           };
 
+          console.log('🗓️ Erstelle ICS-Event:', icsEvent);
           createEvent(icsEvent, async (error, value) => {
+            console.log('🗓️ createEvent Callback:', { error: !!error, hasValue: !!value });
+            if (error) {
+              console.error('❌ ICS Erstellungsfehler:', error);
+            }
             if (error || !value) {
               try {
+                console.log('📧 Sende Mail ohne ICS (createEvent Fehler)');
                 await sendEmail(mailMsg);
                 res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)', icsError: error });
               } catch (sendError) {
@@ -491,12 +497,14 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
               "BEGIN:DAYLIGHT\nTZOFFSETFROM:+0100\nTZOFFSETTO:+0200\nDTSTART:19700329T020000\nRRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\nEND:DAYLIGHT\nEND:VTIMEZONE\n" +
               valueWithTz;
 
+            console.log('✅ ICS erstellt, Länge:', valueWithTz.length);
             mailMsg.attachments = [{
               content: Buffer.from(valueWithTz).toString('base64'),
               filename: 'termin.ics',
               type: 'text/calendar',
               disposition: 'attachment'
             }];
+            console.log('📎 Attachment zu mailMsg hinzugefügt');
             try {
               await sendEmail(mailMsg);
               res.json({ message: 'Teilnahme gespeichert. (Mail inkl. ICS versendet)' });
@@ -505,6 +513,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             }
           });
         } catch (err) {
+          console.error('❌ Fehler im Try-Block:', err);
           try {
             await sendEmail(mailMsg);
             res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet, Fehler im Datum)', icsError: err });
