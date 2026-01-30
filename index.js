@@ -6,6 +6,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sgMail = require('@sendgrid/mail');
+const { Resend } = require('resend');
 const { createEvent } = require('ics');
 const { DateTime } = require('luxon');
 const app = express();
@@ -18,22 +19,77 @@ const PORT = process.env.PORT || 8080;
 console.log('===== ENV Logging =====');
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('SENDGRID_API_KEY:', process.env.SENDGRID_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
+console.log('RESEND_API_KEY:', process.env.RESEND_API_KEY ? 'gesetzt' : 'NICHT gesetzt');
 console.log('JWT_SECRET:', process.env.JWT_SECRET);
 console.log('PORT:', PORT);
 console.log('MAIL_FROM:', process.env.MAIL_FROM);
 console.log('=======================');
 
+// SendGrid Setup (optional)
 if (process.env.SENDGRID_API_KEY) {
   sgMail.setApiKey(process.env.SENDGRID_API_KEY);
   console.log("SendGrid API Key ist gesetzt.");
-} else {
-  console.error("SendGrid API Key fehlt! Bitte prüfe deine .env Datei.");
+}
+
+// Resend Setup (kostenlose Alternative)
+let resend = null;
+if (process.env.RESEND_API_KEY) {
+  resend = new Resend(process.env.RESEND_API_KEY);
+  console.log("Resend API Key ist gesetzt.");
+}
+
+if (!process.env.SENDGRID_API_KEY && !process.env.RESEND_API_KEY) {
+  console.error("Weder SendGrid noch Resend API Key gesetzt! E-Mail-Versand deaktiviert.");
 }
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+// Universelle E-Mail-Funktion (unterstützt SendGrid und Resend)
+async function sendEmail({ to, from, subject, text, html, attachments }) {
+  // Versuche Resend (kostenlos)
+  if (resend) {
+    try {
+      const icsAttachment = attachments && attachments[0];
+      const emailData = {
+        from: from,
+        to: [to],
+        subject: subject,
+        html: html || text,
+      };
+      
+      if (icsAttachment) {
+        emailData.attachments = [{
+          filename: icsAttachment.filename,
+          content: Buffer.from(icsAttachment.content, 'base64'),
+        }];
+      }
+      
+      await resend.emails.send(emailData);
+      console.log(`✅ E-Mail via Resend versendet an ${to}`);
+      return { success: true, provider: 'resend' };
+    } catch (error) {
+      console.error('Resend Fehler:', error);
+      // Fallback zu SendGrid
+    }
+  }
+  
+  // Fallback: SendGrid
+  if (process.env.SENDGRID_API_KEY) {
+    try {
+      await sgMail.send({ to, from, subject, text, html, attachments });
+      console.log(`✅ E-Mail via SendGrid versendet an ${to}`);
+      return { success: true, provider: 'sendgrid' };
+    } catch (error) {
+      console.error('SendGrid Fehler:', error);
+      throw error;
+    }
+  }
+  
+  throw new Error('Kein E-Mail-Provider konfiguriert');
+}
 
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
@@ -344,7 +400,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
     );
 
     // --- Email-Funktion: schicke E-Mail an User mit ICS (Luxon Fix) ---
-    if (process.env.SENDGRID_API_KEY && process.env.MAIL_FROM) {
+    if ((process.env.SENDGRID_API_KEY || process.env.RESEND_API_KEY) && process.env.MAIL_FROM) {
       const userResult = await pool.query('SELECT email FROM users WHERE username = $1', [username]);
       if (userResult.rows.length > 0) {
         const userMail = userResult.rows[0].email;
@@ -402,15 +458,14 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
             organizer: { name: termin.ansprechpartner_name || "", email: termin.ansprechpartner_mail || "" }
           };
 
-          createEvent(icsEvent, (error, value) => {
+          createEvent(icsEvent, async (error, value) => {
             if (error || !value) {
-              sgMail.send(mailMsg)
-                .then(() => {
-                  res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)', icsError: error });
-                })
-                .catch(sendError => {
-                  res.status(500).json({ message: 'Fehler beim Senden der Mail ohne ICS', detail: sendError });
-                });
+              try {
+                await sendEmail(mailMsg);
+                res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet)', icsError: error });
+              } catch (sendError) {
+                res.status(500).json({ message: 'Fehler beim Senden der Mail ohne ICS', detail: sendError });
+              }
               return;
             }
             // VTIMEZONE-Block für Berlin ergänzen:
@@ -430,22 +485,20 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
               type: 'text/calendar',
               disposition: 'attachment'
             }];
-            sgMail.send(mailMsg)
-              .then(() => {
-                res.json({ message: 'Teilnahme gespeichert. (Mail inkl. ICS versendet)' });
-              })
-              .catch(sendError => {
-                res.status(500).json({ message: 'Fehler beim Senden der Mail', detail: sendError });
-              });
+            try {
+              await sendEmail(mailMsg);
+              res.json({ message: 'Teilnahme gespeichert. (Mail inkl. ICS versendet)' });
+            } catch (sendError) {
+              res.status(500).json({ message: 'Fehler beim Senden der Mail', detail: sendError });
+            }
           });
         } catch (err) {
-          sgMail.send(mailMsg)
-            .then(() => {
-              res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet, Fehler im Datum)', icsError: err });
-            })
-            .catch(sendError => {
-              res.status(500).json({ message: 'Fehler beim Senden der Mail ohne ICS', detail: sendError });
-            });
+          try {
+            await sendEmail(mailMsg);
+            res.json({ message: 'Teilnahme gespeichert. (Mail ohne ICS versendet, Fehler im Datum)', icsError: err });
+          } catch (sendError) {
+            res.status(500).json({ message: 'Fehler beim Senden der Mail ohne ICS', detail: sendError });
+          }
         }
         return;
       }
