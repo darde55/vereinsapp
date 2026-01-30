@@ -49,10 +49,14 @@ const pool = new Pool({
 
 // Universelle E-Mail-Funktion (unterstützt SendGrid und Resend)
 async function sendEmail({ to, from, subject, text, html, attachments }) {
+  console.log('📧 sendEmail aufgerufen:', { to, from, subject, hasAttachments: !!attachments });
+  
   // Versuche Resend (kostenlos)
   if (resend) {
     try {
       const icsAttachment = attachments && attachments[0];
+      console.log('📎 ICS Attachment vorhanden:', !!icsAttachment);
+      
       const emailData = {
         from: from,
         to: [to],
@@ -63,17 +67,22 @@ async function sendEmail({ to, from, subject, text, html, attachments }) {
       if (icsAttachment) {
         // Resend erwartet content als Buffer oder String, nicht base64
         const icsContent = Buffer.from(icsAttachment.content, 'base64').toString('utf-8');
+        console.log('📎 ICS Content Länge:', icsContent.length, 'Zeichen');
+        console.log('📎 ICS Content Vorschau:', icsContent.substring(0, 100));
+        
         emailData.attachments = [{
           filename: icsAttachment.filename || 'termin.ics',
           content: icsContent,
         }];
+        console.log('📎 Attachment hinzugefügt zu emailData');
       }
       
-      await resend.emails.send(emailData);
-      console.log(`✅ E-Mail via Resend versendet an ${to}`);
+      console.log('📧 Sende E-Mail via Resend mit Attachments:', !!emailData.attachments);
+      const result = await resend.emails.send(emailData);
+      console.log(`✅ E-Mail via Resend versendet an ${to}`, result);
       return { success: true, provider: 'resend' };
     } catch (error) {
-      console.error('Resend Fehler:', error);
+      console.error('❌ Resend Fehler:', error);
       // Fallback zu SendGrid
     }
   }
@@ -81,11 +90,12 @@ async function sendEmail({ to, from, subject, text, html, attachments }) {
   // Fallback: SendGrid
   if (process.env.SENDGRID_API_KEY) {
     try {
+      console.log('📧 Versuche SendGrid als Fallback');
       await sgMail.send({ to, from, subject, text, html, attachments });
       console.log(`✅ E-Mail via SendGrid versendet an ${to}`);
       return { success: true, provider: 'sendgrid' };
     } catch (error) {
-      console.error('SendGrid Fehler:', error);
+      console.error('❌ SendGrid Fehler:', error);
       throw error;
     }
   }
