@@ -9,6 +9,7 @@ const sgMail = require('@sendgrid/mail');
 const { Resend } = require('resend');
 const { createEvent } = require('ics');
 const { DateTime } = require('luxon');
+const cron = require('node-cron');
 const app = express();
 
 app.use(cors());
@@ -616,6 +617,123 @@ app.get('/api/termine/:id/teilnehmer', authenticateToken, async (req, res) => {
     res.status(500).json({ message: 'Fehler beim Laden der Teilnehmer', error: err.message });
   }
 });
+
+// ========================================
+// CRON JOB: Zufallsauswahl am Stichtag
+// ========================================
+// Läuft täglich um 08:00 Uhr
+cron.schedule('0 8 * * *', async () => {
+  console.log('🎲 Cron-Job gestartet: Prüfe Zufallsauswahl für heute...');
+  
+  try {
+    const heute = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
+    
+    // Finde alle Termine mit Zufallsauswahl, deren Stichtag heute ist
+    const termineRes = await pool.query(
+      `SELECT * FROM termine 
+       WHERE zufallsauswahl = true 
+       AND DATE(stichtag) = $1
+       AND datum >= CURRENT_DATE`,
+      [heute]
+    );
+    
+    if (termineRes.rows.length === 0) {
+      console.log('✅ Keine Termine mit Zufallsauswahl für heute gefunden.');
+      return;
+    }
+    
+    console.log(`📋 ${termineRes.rows.length} Termin(e) mit Zufallsauswahl gefunden.`);
+    
+    for (const termin of termineRes.rows) {
+      console.log(`\n🎯 Verarbeite Termin: ${termin.titel} (ID: ${termin.id})`);
+      
+      // Prüfe, wie viele Teilnehmer bereits angemeldet sind
+      const teilnahmenRes = await pool.query(
+        'SELECT COUNT(*) as count FROM teilnahmen WHERE termin_id = $1',
+        [termin.id]
+      );
+      const aktTeilnehmer = parseInt(teilnahmenRes.rows[0].count);
+      const benoetigte = (termin.anzahl || 0) - aktTeilnehmer;
+      
+      if (benoetigte <= 0) {
+        console.log(`⏭️  Termin bereits voll (${aktTeilnehmer}/${termin.anzahl})`);
+        continue;
+      }
+      
+      console.log(`📊 Benötigte Teilnehmer: ${benoetigte} (aktuell: ${aktTeilnehmer}/${termin.anzahl})`);
+      
+      // Hole User mit niedrigstem Score (nicht Admins, nicht bereits angemeldet)
+      const poolRes = await pool.query(
+        `SELECT u.username, u.email, u.score 
+         FROM users u
+         WHERE u.role != 'admin'
+         AND u.username NOT IN (
+           SELECT username FROM teilnahmen WHERE termin_id = $1
+         )
+         ORDER BY u.score ASC`,
+        [termin.id]
+      );
+      
+      if (poolRes.rows.length === 0) {
+        console.log('❌ Keine verfügbaren User im Pool.');
+        continue;
+      }
+      
+      // Finde minimalen Score
+      const minScore = poolRes.rows[0].score;
+      const userPool = poolRes.rows.filter(u => u.score === minScore);
+      
+      console.log(`🎱 User-Pool mit Score ${minScore}: ${userPool.length} User`);
+      
+      // Zufällige Auswahl aus dem Pool
+      const shuffled = userPool.sort(() => 0.5 - Math.random());
+      const ausgewaehlt = shuffled.slice(0, benoetigte);
+      
+      console.log(`✅ Ausgewählt: ${ausgewaehlt.map(u => u.username).join(', ')}`);
+      
+      // User zu Termin hinzufügen und Score aktualisieren
+      for (const user of ausgewaehlt) {
+        await pool.query(
+          'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)',
+          [termin.id, user.username]
+        );
+        
+        await pool.query(
+          'UPDATE users SET score = score + $1 WHERE username = $2',
+          [termin.score || 0, user.username]
+        );
+        
+        console.log(`  ✓ ${user.username} hinzugefügt (Score +${termin.score || 0})`);
+        
+        // E-Mail an User senden
+        if ((process.env.SENDGRID_API_KEY || process.env.RESEND_API_KEY) && process.env.MAIL_FROM) {
+          const mailMsg = {
+            to: user.email,
+            from: process.env.MAIL_FROM,
+            subject: `Zufallsauswahl: Du wurdest für "${termin.titel}" ausgewählt`,
+            text: `Hallo ${user.username},\n\ndu wurdest per Zufallsauswahl für den Termin "${termin.titel}" am ${termin.datum} ausgewählt.\n\nBitte melde dich bei Fragen beim Ansprechpartner: ${termin.ansprechpartner_name || 'N/A'} (${termin.ansprechpartner_mail || 'N/A'}).\n\nViele Grüße`,
+            html: `<p>Hallo <b>${user.username}</b>,</p><p>du wurdest per <b>Zufallsauswahl</b> für den Termin <b>${termin.titel}</b> am <b>${termin.datum}</b> ausgewählt.</p><p>Bitte melde dich bei Fragen beim Ansprechpartner:<br>${termin.ansprechpartner_name || 'N/A'} (${termin.ansprechpartner_mail || 'N/A'})</p><p>Viele Grüße</p>`
+          };
+          
+          try {
+            await sendEmail(mailMsg);
+            console.log(`  📧 E-Mail an ${user.email} gesendet`);
+          } catch (emailErr) {
+            console.error(`  ❌ Fehler beim E-Mail-Versand an ${user.email}:`, emailErr.message);
+          }
+        }
+      }
+    }
+    
+    console.log('\n✅ Cron-Job abgeschlossen.\n');
+  } catch (err) {
+    console.error('❌ Fehler im Zufallsauswahl-Cron-Job:', err);
+  }
+}, {
+  timezone: "Europe/Berlin"
+});
+
+console.log('⏰ Cron-Job für Zufallsauswahl aktiv (täglich 08:00 Uhr Europe/Berlin)');
 
 // --- Serverstart ---
 app.listen(PORT, () => {
