@@ -682,6 +682,82 @@ app.put('/api/termine/:id/zufallspool', authenticateToken, requireAdmin, async (
   }
 });
 
+// --- Zufallsauswahl starten (Admin) ---
+app.post('/api/termine/:id/zufallsauswahl/start', authenticateToken, requireAdmin, async (req, res) => {
+  const termin_id = req.params.id;
+  const { usernames } = req.body;
+  if (!Array.isArray(usernames) || usernames.length === 0) {
+    return res.status(400).json({ message: 'usernames muss ein nicht-leeres Array sein' });
+  }
+  try {
+    const terminRes = await pool.query('SELECT * FROM termine WHERE id = $1', [termin_id]);
+    if (terminRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Termin nicht gefunden' });
+    }
+    const termin = terminRes.rows[0];
+
+    const teilnahmenRes = await pool.query(
+      'SELECT COUNT(*) as count FROM teilnahmen WHERE termin_id = $1',
+      [termin_id]
+    );
+    const aktTeilnehmer = parseInt(teilnahmenRes.rows[0].count);
+    const maxPlaetze = termin.anzahl || 0;
+    const freiePlaetze = maxPlaetze > 0 ? Math.max(maxPlaetze - aktTeilnehmer, 0) : null;
+
+    const usersRes = await pool.query(
+      `SELECT username, email, score, role FROM users WHERE username = ANY($1)`,
+      [usernames]
+    );
+    const candidates = usersRes.rows
+      .filter(u => u.role !== 'admin')
+      .sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
+
+    const toAssign = freiePlaetze === null ? candidates : candidates.slice(0, freiePlaetze);
+    const skipped = candidates.slice(toAssign.length).map(u => u.username);
+
+    for (const user of toAssign) {
+      const check = await pool.query(
+        'SELECT 1 FROM teilnahmen WHERE termin_id = $1 AND username = $2',
+        [termin_id, user.username]
+      );
+      if (check.rows.length > 0) continue;
+
+      await pool.query(
+        'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)',
+        [termin_id, user.username]
+      );
+
+      await pool.query(
+        'UPDATE users SET score = score + $1 WHERE username = $2',
+        [termin.score || 0, user.username]
+      );
+
+      if ((process.env.SENDGRID_API_KEY || process.env.RESEND_API_KEY) && process.env.MAIL_FROM) {
+        const mailMsg = {
+          to: user.email,
+          from: process.env.MAIL_FROM,
+          subject: `Zufallsauswahl: Du wurdest für "${termin.titel}" ausgewählt`,
+          text: `Hallo ${user.username},\n\ndu wurdest per Zufallsauswahl für den Termin "${termin.titel}" am ${termin.datum} ausgewählt.\n\nBitte melde dich bei Fragen beim Ansprechpartner: ${termin.ansprechpartner_name || 'N/A'} (${termin.ansprechpartner_mail || 'N/A'}).\n\nViele Grüße`,
+          html: `<p>Hallo <b>${user.username}</b>,</p><p>du wurdest per <b>Zufallsauswahl</b> für den Termin <b>${termin.titel}</b> am <b>${termin.datum}</b> ausgewählt.</p><p>Bitte melde dich bei Fragen beim Ansprechpartner:<br>${termin.ansprechpartner_name || 'N/A'} (${termin.ansprechpartner_mail || 'N/A'})</p><p>Viele Grüße</p>`
+        };
+        try {
+          await sendEmail(mailMsg);
+        } catch (emailErr) {
+          console.error(`❌ Fehler beim E-Mail-Versand an ${user.email}:`, emailErr.message);
+        }
+      }
+    }
+
+    res.json({
+      message: 'Zufallsauswahl gestartet',
+      zugeordnet: toAssign.map(u => u.username),
+      uebersprungen: skipped
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Start der Zufallsauswahl', error: err.message });
+  }
+});
+
 // ========================================
 // CRON JOB: Zufallsauswahl am Stichtag
 // ========================================
