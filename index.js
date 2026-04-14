@@ -686,34 +686,71 @@ app.put('/api/termine/:id/zufallspool', authenticateToken, requireAdmin, async (
 app.post('/api/termine/:id/zufallsauswahl/start', authenticateToken, requireAdmin, async (req, res) => {
   const termin_id = req.params.id;
   const { usernames } = req.body;
-  if (!Array.isArray(usernames) || usernames.length === 0) {
-    return res.status(400).json({ message: 'usernames muss ein nicht-leeres Array sein' });
-  }
   try {
     const terminRes = await pool.query('SELECT * FROM termine WHERE id = $1', [termin_id]);
     if (terminRes.rows.length === 0) {
       return res.status(404).json({ message: 'Termin nicht gefunden' });
     }
     const termin = terminRes.rows[0];
+    if (!termin.anzahl || termin.anzahl <= 0) {
+      return res.status(400).json({ message: 'Termin hat keine gültige Anzahl' });
+    }
 
     const teilnahmenRes = await pool.query(
       'SELECT COUNT(*) as count FROM teilnahmen WHERE termin_id = $1',
       [termin_id]
     );
     const aktTeilnehmer = parseInt(teilnahmenRes.rows[0].count);
-    const maxPlaetze = termin.anzahl || 0;
-    const freiePlaetze = maxPlaetze > 0 ? Math.max(maxPlaetze - aktTeilnehmer, 0) : null;
+    const benoetigte = Math.max(termin.anzahl - aktTeilnehmer, 0);
+    if (benoetigte === 0) {
+      return res.json({ message: 'Termin bereits voll', zugeordnet: [], uebersprungen: [] });
+    }
 
-    const usersRes = await pool.query(
-      `SELECT username, email, score, role FROM users WHERE username = ANY($1)`,
-      [usernames]
-    );
-    const candidates = usersRes.rows
-      .filter(u => u.role !== 'admin')
-      .sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
+    let candidates = [];
+    if (Array.isArray(usernames) && usernames.length > 0) {
+      const usersRes = await pool.query(
+        `SELECT username, email, score, role FROM users WHERE username = ANY($1)`,
+        [usernames]
+      );
+      candidates = usersRes.rows.filter(u => u.role !== 'admin');
+    } else {
+      const poolRes = await pool.query(
+        `SELECT u.username, u.email, u.score, u.role
+         FROM users u
+         WHERE u.role != 'admin'
+         AND u.username NOT IN (
+           SELECT username FROM teilnahmen WHERE termin_id = $1
+         )
+         AND (
+           NOT EXISTS (SELECT 1 FROM termin_zufall_pool WHERE termin_id = $1)
+           OR u.username IN (SELECT username FROM termin_zufall_pool WHERE termin_id = $1)
+         )
+         ORDER BY u.score ASC`,
+        [termin_id]
+      );
+      candidates = poolRes.rows;
+    }
 
-    const toAssign = freiePlaetze === null ? candidates : candidates.slice(0, freiePlaetze);
-    const skipped = candidates.slice(toAssign.length).map(u => u.username);
+    const groupedByScore = new Map();
+    for (const user of candidates) {
+      const score = typeof user.score === "number" ? user.score : 0;
+      if (!groupedByScore.has(score)) groupedByScore.set(score, []);
+      groupedByScore.get(score).push(user);
+    }
+    const sortedScores = Array.from(groupedByScore.keys()).sort((a, b) => a - b);
+    const toAssign = [];
+    for (const score of sortedScores) {
+      const group = groupedByScore.get(score).sort(() => 0.5 - Math.random());
+      for (const user of group) {
+        if (toAssign.length >= benoetigte) break;
+        toAssign.push(user);
+      }
+      if (toAssign.length >= benoetigte) break;
+    }
+    const skipped = candidates
+      .filter(u => !toAssign.some(a => a.username === u.username))
+      .map(u => u.username);
+    const fehlend = Math.max(benoetigte - toAssign.length, 0);
 
     for (const user of toAssign) {
       const check = await pool.query(
@@ -749,9 +786,12 @@ app.post('/api/termine/:id/zufallsauswahl/start', authenticateToken, requireAdmi
     }
 
     res.json({
-      message: 'Zufallsauswahl gestartet',
+      message: fehlend > 0
+        ? `Zufallsauswahl gestartet, es fehlen ${fehlend} Teilnehmer.`
+        : 'Zufallsauswahl gestartet',
       zugeordnet: toAssign.map(u => u.username),
-      uebersprungen: skipped
+      uebersprungen: skipped,
+      fehlend
     });
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Start der Zufallsauswahl', error: err.message });
@@ -793,7 +833,11 @@ cron.schedule('0 8 * * *', async () => {
         [termin.id]
       );
       const aktTeilnehmer = parseInt(teilnahmenRes.rows[0].count);
-      const benoetigte = (termin.anzahl || 0) - aktTeilnehmer;
+      if (!termin.anzahl || termin.anzahl <= 0) {
+        console.log(`⏭️  Termin ohne gültige Anzahl (ID: ${termin.id})`);
+        continue;
+      }
+      const benoetigte = termin.anzahl - aktTeilnehmer;
       
       if (benoetigte <= 0) {
         console.log(`⏭️  Termin bereits voll (${aktTeilnehmer}/${termin.anzahl})`);
