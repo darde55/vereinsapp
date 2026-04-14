@@ -48,6 +48,23 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+async function ensureZufallPoolTable() {
+  try {
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS termin_zufall_pool (
+        termin_id INTEGER REFERENCES termine(id) ON DELETE CASCADE,
+        username TEXT REFERENCES users(username) ON DELETE CASCADE,
+        PRIMARY KEY (termin_id, username)
+      )`
+    );
+    console.log('✅ Tabelle termin_zufall_pool bereit.');
+  } catch (err) {
+    console.error('❌ Fehler beim Erstellen der Tabelle termin_zufall_pool:', err.message);
+  }
+}
+
+ensureZufallPoolTable();
+
 // Universelle E-Mail-Funktion (unterstützt SendGrid und Resend)
 async function sendEmail({ to, from, subject, text, html, attachments }) {
   console.log('📧 sendEmail aufgerufen:', { to, from, subject, hasAttachments: !!attachments });
@@ -122,6 +139,13 @@ function authenticateToken(req, res, next) {
   } catch (err) {
     return res.status(403).json({ message: 'Token ungültig', error: err.message });
   }
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Admin-Rechte erforderlich' });
+  }
+  next();
 }
 
 // --- Kiosk-Modul einbinden ---
@@ -618,6 +642,46 @@ app.get('/api/termine/:id/teilnehmer', authenticateToken, async (req, res) => {
   }
 });
 
+// --- Zufallsauswahl-Pool für Termin (Admin) ---
+app.get('/api/termine/:id/zufallspool', authenticateToken, requireAdmin, async (req, res) => {
+  const termin_id = req.params.id;
+  try {
+    const result = await pool.query(
+      'SELECT username FROM termin_zufall_pool WHERE termin_id = $1 ORDER BY username ASC',
+      [termin_id]
+    );
+    res.json({ usernames: result.rows.map(r => r.username) });
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Laden des Zufallspools', error: err.message });
+  }
+});
+
+app.put('/api/termine/:id/zufallspool', authenticateToken, requireAdmin, async (req, res) => {
+  const termin_id = req.params.id;
+  const { usernames } = req.body;
+  if (!Array.isArray(usernames)) {
+    return res.status(400).json({ message: 'usernames muss ein Array sein' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM termin_zufall_pool WHERE termin_id = $1', [termin_id]);
+    for (const username of usernames) {
+      await client.query(
+        'INSERT INTO termin_zufall_pool (termin_id, username) VALUES ($1, $2)',
+        [termin_id, username]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ message: 'Zufallspool gespeichert', count: usernames.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: 'Fehler beim Speichern des Zufallspools', error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // ========================================
 // CRON JOB: Zufallsauswahl am Stichtag
 // ========================================
@@ -662,13 +726,17 @@ cron.schedule('0 8 * * *', async () => {
       
       console.log(`📊 Benötigte Teilnehmer: ${benoetigte} (aktuell: ${aktTeilnehmer}/${termin.anzahl})`);
       
-      // Hole User mit niedrigstem Score (nicht Admins, nicht bereits angemeldet)
+      // Hole User aus dem Zufallspool (falls vorhanden), sonst alle Nicht-Admins
       const poolRes = await pool.query(
         `SELECT u.username, u.email, u.score 
          FROM users u
          WHERE u.role != 'admin'
          AND u.username NOT IN (
            SELECT username FROM teilnahmen WHERE termin_id = $1
+         )
+         AND (
+           NOT EXISTS (SELECT 1 FROM termin_zufall_pool WHERE termin_id = $1)
+           OR u.username IN (SELECT username FROM termin_zufall_pool WHERE termin_id = $1)
          )
          ORDER BY u.score ASC`,
         [termin.id]
@@ -679,15 +747,26 @@ cron.schedule('0 8 * * *', async () => {
         continue;
       }
       
-      // Finde minimalen Score
-      const minScore = poolRes.rows[0].score;
-      const userPool = poolRes.rows.filter(u => u.score === minScore);
+      // Bevorzuge niedrigere Scores: erst niedrige Scores, Zufall nur innerhalb gleicher Scores
+      const groupedByScore = new Map();
+      for (const user of poolRes.rows) {
+        const score = typeof user.score === "number" ? user.score : 0;
+        if (!groupedByScore.has(score)) groupedByScore.set(score, []);
+        groupedByScore.get(score).push(user);
+      }
+      const sortedScores = Array.from(groupedByScore.keys()).sort((a, b) => a - b);
+      const ausgewaehlt = [];
+      for (const score of sortedScores) {
+        const group = groupedByScore.get(score).sort(() => 0.5 - Math.random());
+        for (const user of group) {
+          if (ausgewaehlt.length >= benoetigte) break;
+          ausgewaehlt.push(user);
+        }
+        if (ausgewaehlt.length >= benoetigte) break;
+      }
       
-      console.log(`🎱 User-Pool mit Score ${minScore}: ${userPool.length} User`);
-      
-      // Zufällige Auswahl aus dem Pool
-      const shuffled = userPool.sort(() => 0.5 - Math.random());
-      const ausgewaehlt = shuffled.slice(0, benoetigte);
+      const minScore = sortedScores[0];
+      console.log(`🎱 User-Pool mit niedrigem Score ${minScore}: ${groupedByScore.get(minScore).length} User`);
       
       console.log(`✅ Ausgewählt: ${ausgewaehlt.map(u => u.username).join(', ')}`);
       
