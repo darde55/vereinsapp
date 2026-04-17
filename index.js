@@ -309,6 +309,16 @@ app.post('/api/users', authenticateToken, async (req, res) => {
   }
 });
 
+// --- Scores zurücksetzen (Admin) ---
+app.post('/api/scores/reset', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    await pool.query('UPDATE users SET score = 0');
+    res.json({ message: 'Scores aller User wurden auf 0 gesetzt.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Zurücksetzen der Scores', error: err.message });
+  }
+});
+
 app.put('/api/users/:username', authenticateToken, async (req, res) => {
   const username = req.params.username;
   const { email, role, score } = req.body;
@@ -355,12 +365,20 @@ app.get('/api/termine', async (req, res) => {
 // --- Termine als Excel exportieren (Admin/Organisator) ---
 app.get('/api/termine/export/excel', authenticateToken, requireOrganizerOrAdmin, async (req, res) => {
   try {
+    const { kategorie, von, bis } = req.query;
+    const hasKategorie = typeof kategorie === 'string' && kategorie.trim() !== '';
+    const hasVon = typeof von === 'string' && von.trim() !== '';
+    const hasBis = typeof bis === 'string' && bis.trim() !== '';
     const result = await pool.query(
       `SELECT t.*, COALESCE(array_agg(tn.username) FILTER (WHERE tn.username IS NOT NULL), '{}') AS teilnehmer
        FROM termine t
        LEFT JOIN teilnahmen tn ON tn.termin_id = t.id
+       WHERE ($1::text IS NULL OR t.kategorie = $1)
+         AND ($2::date IS NULL OR t.datum >= $2::date)
+         AND ($3::date IS NULL OR t.datum <= $3::date)
        GROUP BY t.id
-       ORDER BY t.datum ASC`
+       ORDER BY t.datum ASC`,
+      [hasKategorie ? kategorie : null, hasVon ? von : null, hasBis ? bis : null]
     );
 
     const workbook = new ExcelJS.Workbook();
@@ -391,7 +409,9 @@ app.get('/api/termine/export/excel', authenticateToken, requireOrganizerOrAdmin,
     const buffer = await workbook.xlsx.writeBuffer();
     const today = new Date().toISOString().split('T')[0];
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="termine_export_${today}.xlsx"`);
+    const suffix = hasKategorie ? `_${String(kategorie).toLowerCase()}` : '';
+    const dateSuffix = `${hasVon ? `_von-${String(von)}` : ''}${hasBis ? `_bis-${String(bis)}` : ''}`;
+    res.setHeader('Content-Disposition', `attachment; filename="termine_export${suffix}${dateSuffix}_${today}.xlsx"`);
     res.send(Buffer.from(buffer));
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Excel-Export', error: err.message });
@@ -448,15 +468,38 @@ app.put('/api/termine/:id', authenticateToken, async (req, res) => {
 // --- Termin löschen (Admin) ---
 app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
   const termin_id = req.params.id;
+  const client = await pool.connect();
   try {
-    await pool.query('DELETE FROM teilnahmen WHERE termin_id = $1', [termin_id]);
-    const result = await pool.query('DELETE FROM termine WHERE id = $1 RETURNING *', [termin_id]);
-    if (result.rows.length === 0) {
+    await client.query('BEGIN');
+    const terminRes = await client.query('SELECT * FROM termine WHERE id = $1', [termin_id]);
+    if (terminRes.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Termin nicht gefunden' });
     }
+    const termin = terminRes.rows[0];
+    const terminScore = typeof termin.score === "number" ? termin.score : 0;
+
+    const teilnehmerRes = await client.query(
+      'SELECT username FROM teilnahmen WHERE termin_id = $1',
+      [termin_id]
+    );
+    const teilnehmer = teilnehmerRes.rows.map(r => r.username);
+    if (teilnehmer.length > 0 && terminScore !== 0) {
+      await client.query(
+        'UPDATE users SET score = score - $1 WHERE username = ANY($2)',
+        [terminScore, teilnehmer]
+      );
+    }
+
+    await client.query('DELETE FROM teilnahmen WHERE termin_id = $1', [termin_id]);
+    const result = await client.query('DELETE FROM termine WHERE id = $1 RETURNING *', [termin_id]);
+    await client.query('COMMIT');
     res.json({ message: 'Termin gelöscht', termin: result.rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK');
     res.status(500).json({ message: 'Fehler beim Löschen des Termins', error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -618,6 +661,75 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
     res.json({ message: 'Teilnahme gespeichert.' });
   } catch (err) {
     res.status(500).json({ message: 'Fehler bei Teilnahme', error: err.message });
+  }
+});
+
+// --- Tauschpartner: Teilnehmer ersetzen ---
+app.post('/api/termine/:id/tausch', authenticateToken, async (req, res) => {
+  const termin_id = req.params.id;
+  const fromUsername = req.user.username;
+  const { newUsername } = req.body;
+  if (!newUsername || typeof newUsername !== 'string') {
+    return res.status(400).json({ message: 'newUsername fehlt' });
+  }
+  if (newUsername === fromUsername) {
+    return res.status(400).json({ message: 'Tauschpartner muss ein anderer User sein' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const terminRes = await client.query('SELECT score FROM termine WHERE id = $1', [termin_id]);
+    if (terminRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Termin nicht gefunden' });
+    }
+    const terminScore = typeof terminRes.rows[0].score === "number" ? terminRes.rows[0].score : 0;
+
+    const checkFrom = await client.query(
+      'SELECT 1 FROM teilnahmen WHERE termin_id = $1 AND username = $2',
+      [termin_id, fromUsername]
+    );
+    if (checkFrom.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'Du bist für diesen Termin nicht angemeldet' });
+    }
+
+    const checkTo = await client.query(
+      'SELECT 1 FROM teilnahmen WHERE termin_id = $1 AND username = $2',
+      [termin_id, newUsername]
+    );
+    if (checkTo.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'User ist bereits angemeldet' });
+    }
+
+    await client.query(
+      'DELETE FROM teilnahmen WHERE termin_id = $1 AND username = $2',
+      [termin_id, fromUsername]
+    );
+    await client.query(
+      'UPDATE users SET score = score - $1 WHERE username = $2',
+      [terminScore, fromUsername]
+    );
+
+    await client.query(
+      'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)',
+      [termin_id, newUsername]
+    );
+    await client.query(
+      'UPDATE users SET score = score + $1 WHERE username = $2',
+      [terminScore, newUsername]
+    );
+
+    await client.query('COMMIT');
+    res.json({ message: 'Tausch erfolgreich', from: fromUsername, to: newUsername });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: 'Fehler beim Tauschen', error: err.message });
+  } finally {
+    client.release();
   }
 });
 
