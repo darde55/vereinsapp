@@ -10,6 +10,7 @@ const { Resend } = require('resend');
 const { createEvent } = require('ics');
 const { DateTime } = require('luxon');
 const cron = require('node-cron');
+const ExcelJS = require('exceljs');
 const app = express();
 
 app.use(cors());
@@ -144,6 +145,13 @@ function authenticateToken(req, res, next) {
 function requireAdmin(req, res, next) {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Admin-Rechte erforderlich' });
+  }
+  next();
+}
+
+function requireOrganizerOrAdmin(req, res, next) {
+  if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'organisator')) {
+    return res.status(403).json({ message: 'Admin- oder Organisator-Rechte erforderlich' });
   }
   next();
 }
@@ -341,6 +349,52 @@ app.get('/api/termine', async (req, res) => {
     res.json(termine);
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Laden der Termine', error: err.message });
+  }
+});
+
+// --- Termine als Excel exportieren (Admin/Organisator) ---
+app.get('/api/termine/export/excel', authenticateToken, requireOrganizerOrAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT t.*, COALESCE(array_agg(tn.username) FILTER (WHERE tn.username IS NOT NULL), '{}') AS teilnehmer
+       FROM termine t
+       LEFT JOIN teilnahmen tn ON tn.termin_id = t.id
+       GROUP BY t.id
+       ORDER BY t.datum ASC`
+    );
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Termine');
+
+    worksheet.columns = [
+      { header: 'Titel', key: 'titel', width: 30 },
+      { header: 'Datum', key: 'datum', width: 15 },
+      { header: 'Beginn', key: 'beginn', width: 10 },
+      { header: 'Ende', key: 'ende', width: 10 },
+      { header: 'Kategorie', key: 'kategorie', width: 15 },
+      { header: 'Anzahl', key: 'anzahl', width: 10 },
+      { header: 'Teilnehmer', key: 'teilnehmer', width: 50 }
+    ];
+
+    for (const termin of result.rows) {
+      worksheet.addRow({
+        titel: termin.titel,
+        datum: termin.datum ? String(termin.datum).split('T')[0] : '',
+        beginn: termin.beginn || '',
+        ende: termin.ende || '',
+        kategorie: termin.kategorie || '',
+        anzahl: termin.anzahl ?? '',
+        teilnehmer: Array.isArray(termin.teilnehmer) ? termin.teilnehmer.join(', ') : ''
+      });
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const today = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="termine_export_${today}.xlsx"`);
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Excel-Export', error: err.message });
   }
 });
 
