@@ -204,9 +204,6 @@ function requireOrganizerOrAdmin(req, res, next) {
   next();
 }
 
-// --- Kiosk-Modul einbinden ---
-const kioskRoutes = require('./kiosk')(pool, authenticateToken);
-app.use('/api/kiosk', kioskRoutes);
 
 // --- Healthcheck ---
 app.get('/api/ping', (req, res) => {
