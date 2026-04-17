@@ -73,8 +73,39 @@ async function ensureZufallPoolTable() {
   }
 }
 
+async function ensureScoreHistoryTable() {
+  try {
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS score_history (
+        id SERIAL PRIMARY KEY,
+        username TEXT REFERENCES users(username) ON DELETE CASCADE,
+        delta INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        termin_id INTEGER REFERENCES termine(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`
+    );
+    console.log('✅ Tabelle score_history bereit.');
+  } catch (err) {
+    console.error('❌ Fehler beim Erstellen der Tabelle score_history:', err.message);
+  }
+}
+
+async function logScoreChange(username, delta, reason, terminId = null, client = pool) {
+  if (!delta) return;
+  try {
+    await client.query(
+      'INSERT INTO score_history (username, delta, reason, termin_id) VALUES ($1, $2, $3, $4)',
+      [username, delta, reason, terminId]
+    );
+  } catch (err) {
+    console.error('❌ Fehler beim Loggen der Score-Änderung:', err.message);
+  }
+}
+
 ensureZufallPoolTable();
 ensureUsersVisibleColumn();
+ensureScoreHistoryTable();
 
 // Universelle E-Mail-Funktion (unterstützt SendGrid und Resend)
 async function sendEmail({ to, from, subject, text, html, attachments }) {
@@ -248,6 +279,24 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// --- Score-Historie (User) ---
+app.get('/api/profile/score-history', authenticateToken, async (req, res) => {
+  try {
+    const username = req.user.username;
+    const result = await pool.query(
+      `SELECT sh.delta, sh.reason, sh.created_at, t.titel AS termin_titel
+       FROM score_history sh
+       LEFT JOIN termine t ON t.id = sh.termin_id
+       WHERE sh.username = $1
+       ORDER BY sh.created_at DESC`,
+      [username]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Laden der Score-Historie', error: err.message });
+  }
+});
+
 // --- Passwort ändern (geschützt für User/Admin) ---
 app.post('/api/profile/password', authenticateToken, async (req, res) => {
   const username = req.user.username;
@@ -289,6 +338,25 @@ app.get('/api/profile/termine', authenticateToken, async (req, res) => {
   }
 });
 
+// --- Aktive Termine eines Users (für Tausch) ---
+app.get('/api/users/:username/termine/aktiv', authenticateToken, async (req, res) => {
+  const username = req.params.username;
+  try {
+    const result = await pool.query(
+      `SELECT t.id, t.titel, t.datum, t.beginn, t.ende
+       FROM termine t
+       JOIN teilnahmen tn ON t.id = tn.termin_id
+       WHERE tn.username = $1
+       AND t.datum >= CURRENT_DATE
+       ORDER BY t.datum ASC`,
+      [username]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Fehler beim Laden der User-Termine', error: err.message });
+  }
+});
+
 // --- Benutzerverwaltung (Admin) ---
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
@@ -323,7 +391,12 @@ app.post('/api/users', authenticateToken, async (req, res) => {
 // --- Scores zurücksetzen (Admin) ---
 app.post('/api/scores/reset', authenticateToken, requireAdmin, async (req, res) => {
   try {
+    const usersRes = await pool.query('SELECT username, score FROM users');
     await pool.query('UPDATE users SET score = 0');
+    for (const u of usersRes.rows) {
+      const delta = -(u.score ?? 0);
+      await logScoreChange(u.username, delta, 'Saison-Reset');
+    }
     res.json({ message: 'Scores aller User wurden auf 0 gesetzt.' });
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Zurücksetzen der Scores', error: err.message });
@@ -334,10 +407,14 @@ app.put('/api/users/:username', authenticateToken, async (req, res) => {
   const username = req.params.username;
   const { email, role, score, visible } = req.body;
   try {
+    const currentScoreRes = await pool.query('SELECT score FROM users WHERE username = $1', [username]);
+    const currentScore = currentScoreRes.rows[0]?.score ?? 0;
     const result = await pool.query(
       'UPDATE users SET email=$1, role=$2, score=$3, visible=$4 WHERE username=$5 RETURNING *',
       [email, role, score, visible !== false, username]
     );
+    const delta = (score ?? 0) - (currentScore ?? 0);
+    await logScoreChange(username, delta, 'Admin-Änderung');
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Bearbeiten des Benutzers', error: err.message });
@@ -500,6 +577,9 @@ app.delete('/api/termine/:id', authenticateToken, async (req, res) => {
         'UPDATE users SET score = score - $1 WHERE username = ANY($2)',
         [terminScore, teilnehmer]
       );
+      for (const username of teilnehmer) {
+        await logScoreChange(username, -terminScore, 'Termin gelöscht', termin_id, client);
+      }
     }
 
     await client.query('DELETE FROM teilnahmen WHERE termin_id = $1', [termin_id]);
@@ -543,6 +623,7 @@ app.post('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) => {
       'UPDATE users SET score = score + $1 WHERE username = $2',
       [terminScore, username]
     );
+    await logScoreChange(username, terminScore, 'Anmeldung Termin', termin_id);
 
     // --- Email-Funktion: schicke E-Mail an User mit ICS (Luxon Fix) ---
     if ((process.env.SENDGRID_API_KEY || process.env.RESEND_API_KEY) && process.env.MAIL_FROM) {
@@ -724,6 +805,7 @@ app.post('/api/termine/:id/tausch', authenticateToken, async (req, res) => {
       'UPDATE users SET score = score - $1 WHERE username = $2',
       [terminScore, fromUsername]
     );
+    await logScoreChange(fromUsername, -terminScore, 'Tausch (Abgabe)', termin_id, client);
 
     await client.query(
       'INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)',
@@ -733,12 +815,101 @@ app.post('/api/termine/:id/tausch', authenticateToken, async (req, res) => {
       'UPDATE users SET score = score + $1 WHERE username = $2',
       [terminScore, newUsername]
     );
+    await logScoreChange(newUsername, terminScore, 'Tausch (Übernahme)', termin_id, client);
 
     await client.query('COMMIT');
     res.json({ message: 'Tausch erfolgreich', from: fromUsername, to: newUsername });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ message: 'Fehler beim Tauschen', error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// --- Termin-zu-Termin-Tausch ---
+app.post('/api/termine/tausch/termin-zu-termin', authenticateToken, async (req, res) => {
+  const { partnerUsername, eigenerTerminId, partnerTerminId } = req.body;
+  const currentUsername = req.user.username;
+  if (!partnerUsername || !eigenerTerminId) {
+    return res.status(400).json({ message: 'partnerUsername und eigenerTerminId sind erforderlich' });
+  }
+  if (partnerUsername === currentUsername) {
+    return res.status(400).json({ message: 'Partner muss ein anderer User sein' });
+  }
+  if (partnerTerminId && Number(eigenerTerminId) === Number(partnerTerminId)) {
+    return res.status(400).json({ message: 'Termine müssen unterschiedlich sein' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const ownCheck = await client.query(
+      'SELECT 1 FROM teilnahmen WHERE termin_id = $1 AND username = $2',
+      [eigenerTerminId, currentUsername]
+    );
+    if (ownCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'Du bist für deinen Termin nicht angemeldet' });
+    }
+
+    const ownTerminRes = await client.query('SELECT score FROM termine WHERE id = $1', [eigenerTerminId]);
+    if (ownTerminRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Termin nicht gefunden' });
+    }
+    const ownScore = typeof ownTerminRes.rows[0].score === 'number' ? ownTerminRes.rows[0].score : 0;
+
+    if (partnerTerminId) {
+      const partnerCheck = await client.query(
+        'SELECT 1 FROM teilnahmen WHERE termin_id = $1 AND username = $2',
+        [partnerTerminId, partnerUsername]
+      );
+      if (partnerCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ message: 'Partner ist für den Termin nicht angemeldet' });
+      }
+
+      const partnerTerminRes = await client.query('SELECT score FROM termine WHERE id = $1', [partnerTerminId]);
+      if (partnerTerminRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'Termin nicht gefunden' });
+      }
+      const partnerScore = typeof partnerTerminRes.rows[0].score === 'number' ? partnerTerminRes.rows[0].score : 0;
+
+      await client.query('DELETE FROM teilnahmen WHERE termin_id = $1 AND username = $2', [eigenerTerminId, currentUsername]);
+      await client.query('DELETE FROM teilnahmen WHERE termin_id = $1 AND username = $2', [partnerTerminId, partnerUsername]);
+
+      await client.query('INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)', [eigenerTerminId, partnerUsername]);
+      await client.query('INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)', [partnerTerminId, currentUsername]);
+
+      await client.query('UPDATE users SET score = score - $1 + $2 WHERE username = $3', [ownScore, partnerScore, currentUsername]);
+      await client.query('UPDATE users SET score = score - $1 + $2 WHERE username = $3', [partnerScore, ownScore, partnerUsername]);
+
+      await logScoreChange(currentUsername, -ownScore, 'Tausch (Abgabe)', eigenerTerminId, client);
+      await logScoreChange(currentUsername, partnerScore, 'Tausch (Übernahme)', partnerTerminId, client);
+      await logScoreChange(partnerUsername, -partnerScore, 'Tausch (Abgabe)', partnerTerminId, client);
+      await logScoreChange(partnerUsername, ownScore, 'Tausch (Übernahme)', eigenerTerminId, client);
+
+      await client.query('COMMIT');
+      res.json({ message: 'Termin-Tausch erfolgreich', partnerUsername, eigenerTerminId, partnerTerminId });
+      return;
+    }
+
+    await client.query('DELETE FROM teilnahmen WHERE termin_id = $1 AND username = $2', [eigenerTerminId, currentUsername]);
+    await client.query('UPDATE users SET score = score - $1 WHERE username = $2', [ownScore, currentUsername]);
+    await logScoreChange(currentUsername, -ownScore, 'Termin übertragen (Abgabe)', eigenerTerminId, client);
+
+    await client.query('INSERT INTO teilnahmen (termin_id, username) VALUES ($1, $2)', [eigenerTerminId, partnerUsername]);
+    await client.query('UPDATE users SET score = score + $1 WHERE username = $2', [ownScore, partnerUsername]);
+    await logScoreChange(partnerUsername, ownScore, 'Termin übertragen (Übernahme)', eigenerTerminId, client);
+
+    await client.query('COMMIT');
+    res.json({ message: 'Termin übertragen', partnerUsername, eigenerTerminId });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ message: 'Fehler beim Termin-Tausch', error: err.message });
   } finally {
     client.release();
   }
@@ -766,6 +937,7 @@ app.delete('/api/termine/:id/teilnehmen', authenticateToken, async (req, res) =>
       'UPDATE users SET score = score - $1 WHERE username = $2',
       [terminScore, username]
     );
+    await logScoreChange(username, -terminScore, 'Abmeldung Termin', termin_id);
 
     res.json({ message: 'Teilnahme entfernt & Score abgezogen' });
   } catch (err) {
@@ -795,6 +967,7 @@ app.delete('/api/termine/:id/teilnehmer/:username', authenticateToken, async (re
       'UPDATE users SET score = score - $1 WHERE username = $2',
       [terminScore, username]
     );
+    await logScoreChange(username, -terminScore, 'Admin entfernt Teilnahme', termin_id);
 
     res.json({ message: `Teilnehmer ${username} von Termin ${termin_id} entfernt & Score abgezogen.` });
   } catch (err) {
@@ -946,6 +1119,7 @@ app.post('/api/termine/:id/zufallsauswahl/start', authenticateToken, requireAdmi
         'UPDATE users SET score = score + $1 WHERE username = $2',
         [termin.score || 0, user.username]
       );
+      await logScoreChange(user.username, termin.score || 0, 'Zufallsauswahl (Cron)', termin.id);
 
       if ((process.env.SENDGRID_API_KEY || process.env.RESEND_API_KEY) && process.env.MAIL_FROM) {
         const mailMsg = {
@@ -1080,6 +1254,7 @@ cron.schedule('0 8 * * *', async () => {
           'UPDATE users SET score = score + $1 WHERE username = $2',
           [termin.score || 0, user.username]
         );
+        await logScoreChange(user.username, termin.score || 0, 'Zufallsauswahl (Start)', termin.id);
         
         console.log(`  ✓ ${user.username} hinzugefügt (Score +${termin.score || 0})`);
         
