@@ -49,6 +49,15 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+async function ensureUsersVisibleColumn() {
+  try {
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS visible BOOLEAN DEFAULT TRUE');
+    console.log('✅ Spalte users.visible bereit.');
+  } catch (err) {
+    console.error('❌ Fehler beim Anlegen der Spalte users.visible:', err.message);
+  }
+}
+
 async function ensureZufallPoolTable() {
   try {
     await pool.query(
@@ -65,6 +74,7 @@ async function ensureZufallPoolTable() {
 }
 
 ensureZufallPoolTable();
+ensureUsersVisibleColumn();
 
 // Universelle E-Mail-Funktion (unterstützt SendGrid und Resend)
 async function sendEmail({ to, from, subject, text, html, attachments }) {
@@ -167,15 +177,15 @@ app.get('/api/ping', (req, res) => {
 
 // --- Registrierung ---
 app.post('/api/register', async (req, res) => {
-  const { username, email, password, role } = req.body;
+  const { username, email, password, role, visible } = req.body;
   if (!username || !email || !password || !role) {
     return res.status(400).json({ message: 'Fehlende Felder!' });
   }
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
-      'INSERT INTO users (username, email, password, role, score) VALUES ($1, $2, $3, $4, $5)',
-      [username, email, hashedPassword, role, 0]
+      'INSERT INTO users (username, email, password, role, score, visible) VALUES ($1, $2, $3, $4, $5, $6)',
+      [username, email, hashedPassword, role, 0, visible !== false]
     );
     res.status(201).json({ message: 'User registriert' });
   } catch (err) {
@@ -219,7 +229,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
     const username = req.user.username;
     const result = await pool.query(
-      'SELECT username, email, role, score FROM users WHERE LOWER(username) = LOWER($1)',
+      'SELECT username, email, role, score, visible FROM users WHERE LOWER(username) = LOWER($1)',
       [username]
     );
     if (result.rows.length === 0) {
@@ -230,7 +240,8 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       username: user.username || "",
       email: user.email || "",
       role: user.role || "",
-      score: user.score != null ? user.score : 0
+      score: user.score != null ? user.score : 0,
+      visible: user.visible !== false
     });
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Laden des Profils', error: err.message });
@@ -281,7 +292,7 @@ app.get('/api/profile/termine', authenticateToken, async (req, res) => {
 // --- Benutzerverwaltung (Admin) ---
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query('SELECT username, email, role, score FROM users');
+    const result = await pool.query('SELECT username, email, role, score, visible FROM users');
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Laden der Benutzer', error: err.message });
@@ -289,15 +300,15 @@ app.get('/api/users', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/users', authenticateToken, async (req, res) => {
-  const { username, email, password, role } = req.body;
+  const { username, email, password, role, visible } = req.body;
   if (!username || !email || !password || !role) {
     return res.status(400).json({ message: 'Fehlende Felder!' });
   }
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
-      'INSERT INTO users (username, email, password, role, score) VALUES ($1, $2, $3, $4, $5)',
-      [username, email, hashedPassword, role, 0]
+      'INSERT INTO users (username, email, password, role, score, visible) VALUES ($1, $2, $3, $4, $5, $6)',
+      [username, email, hashedPassword, role, 0, visible !== false]
     );
     res.status(201).json({ message: 'User angelegt' });
   } catch (err) {
@@ -321,11 +332,11 @@ app.post('/api/scores/reset', authenticateToken, requireAdmin, async (req, res) 
 
 app.put('/api/users/:username', authenticateToken, async (req, res) => {
   const username = req.params.username;
-  const { email, role, score } = req.body;
+  const { email, role, score, visible } = req.body;
   try {
     const result = await pool.query(
-      'UPDATE users SET email=$1, role=$2, score=$3 WHERE username=$4 RETURNING *',
-      [email, role, score, username]
+      'UPDATE users SET email=$1, role=$2, score=$3, visible=$4 WHERE username=$5 RETURNING *',
+      [email, role, score, visible !== false, username]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -884,6 +895,7 @@ app.post('/api/termine/:id/zufallsauswahl/start', authenticateToken, requireAdmi
         `SELECT u.username, u.email, u.score, u.role
          FROM users u
          WHERE u.role != 'admin'
+         AND u.visible = true
          AND u.username NOT IN (
            SELECT username FROM teilnahmen WHERE termin_id = $1
          )
@@ -1017,6 +1029,7 @@ cron.schedule('0 8 * * *', async () => {
         `SELECT u.username, u.email, u.score 
          FROM users u
          WHERE u.role != 'admin'
+         AND u.visible = true
          AND u.username NOT IN (
            SELECT username FROM teilnahmen WHERE termin_id = $1
          )
