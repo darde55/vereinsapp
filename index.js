@@ -293,7 +293,8 @@ app.get('/api/profile/score-history', authenticateToken, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ message: 'Fehler beim Laden der Score-Historie', error: err.message });
+    console.error('❌ Fehler beim Laden der Score-Historie:', err.message);
+    res.json([]);
   }
 });
 
