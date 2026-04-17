@@ -82,9 +82,11 @@ async function ensureScoreHistoryTable() {
         delta INTEGER NOT NULL,
         reason TEXT NOT NULL,
         termin_id INTEGER REFERENCES termine(id) ON DELETE SET NULL,
+        termin_titel TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       )`
     );
+    await pool.query('ALTER TABLE score_history ADD COLUMN IF NOT EXISTS termin_titel TEXT');
     console.log('✅ Tabelle score_history bereit.');
   } catch (err) {
     console.error('❌ Fehler beim Erstellen der Tabelle score_history:', err.message);
@@ -94,9 +96,14 @@ async function ensureScoreHistoryTable() {
 async function logScoreChange(username, delta, reason, terminId = null, client = pool) {
   if (!delta) return;
   try {
+    let terminTitel = null;
+    if (terminId) {
+      const terminRes = await client.query('SELECT titel FROM termine WHERE id = $1', [terminId]);
+      terminTitel = terminRes.rows[0]?.titel || null;
+    }
     await client.query(
-      'INSERT INTO score_history (username, delta, reason, termin_id) VALUES ($1, $2, $3, $4)',
-      [username, delta, reason, terminId]
+      'INSERT INTO score_history (username, delta, reason, termin_id, termin_titel) VALUES ($1, $2, $3, $4, $5)',
+      [username, delta, reason, terminId, terminTitel]
     );
   } catch (err) {
     console.error('❌ Fehler beim Loggen der Score-Änderung:', err.message);
@@ -284,7 +291,7 @@ app.get('/api/profile/score-history', authenticateToken, async (req, res) => {
   try {
     const username = req.user.username;
     const result = await pool.query(
-      `SELECT sh.delta, sh.reason, sh.created_at, t.titel AS termin_titel
+      `SELECT sh.delta, sh.reason, sh.created_at, COALESCE(sh.termin_titel, t.titel) AS termin_titel
        FROM score_history sh
        LEFT JOIN termine t ON t.id = sh.termin_id
        WHERE sh.username = $1
