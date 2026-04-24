@@ -49,6 +49,17 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+function normalizeVisible(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (['false', '0', 'f', 'no', 'nein', 'off'].includes(v)) return false;
+    if (['true', '1', 't', 'yes', 'ja', 'on'].includes(v)) return true;
+  }
+  return value !== false;
+}
+
 async function ensureUsersVisibleColumn() {
   try {
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS visible BOOLEAN DEFAULT TRUE');
@@ -220,7 +231,7 @@ app.post('/api/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
       'INSERT INTO users (username, email, password, role, score, visible) VALUES ($1, $2, $3, $4, $5, $6)',
-      [username, email, hashedPassword, role, 0, visible !== false]
+      [username, email, hashedPassword, role, 0, normalizeVisible(visible)]
     );
     res.status(201).json({ message: 'User registriert' });
   } catch (err) {
@@ -276,7 +287,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       email: user.email || "",
       role: user.role || "",
       score: user.score != null ? user.score : 0,
-      visible: user.visible !== false
+      visible: normalizeVisible(user.visible)
     });
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Laden des Profils', error: err.message });
@@ -366,7 +377,10 @@ app.get('/api/users/:username/termine/aktiv', authenticateToken, async (req, res
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query('SELECT username, email, role, score, visible FROM users');
-    res.json(result.rows);
+    res.json(result.rows.map((u) => ({
+      ...u,
+      visible: normalizeVisible(u.visible),
+    })));
   } catch (err) {
     res.status(500).json({ message: 'Fehler beim Laden der Benutzer', error: err.message });
   }
@@ -381,7 +395,7 @@ app.post('/api/users', authenticateToken, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
       'INSERT INTO users (username, email, password, role, score, visible) VALUES ($1, $2, $3, $4, $5, $6)',
-      [username, email, hashedPassword, role, 0, visible !== false]
+      [username, email, hashedPassword, role, 0, normalizeVisible(visible)]
     );
     res.status(201).json({ message: 'User angelegt' });
   } catch (err) {
@@ -416,7 +430,7 @@ app.put('/api/users/:username', authenticateToken, async (req, res) => {
     const currentScore = currentScoreRes.rows[0]?.score ?? 0;
     const result = await pool.query(
       'UPDATE users SET email=$1, role=$2, score=$3, visible=$4 WHERE username=$5 RETURNING *',
-      [email, role, score, visible !== false, username]
+      [email, role, score, normalizeVisible(visible), username]
     );
     const delta = (score ?? 0) - (currentScore ?? 0);
     await logScoreChange(username, delta, 'Admin-Änderung');
